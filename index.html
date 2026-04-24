@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>My TV Streaming App</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<aside class="sidebar">
+    <div class="brand">Stream<span>Box</span></div>
+    <button class="nav-btn active" data-focusable="true" data-type="nav" data-screen="home">🏠 Home</button>
+    <button class="nav-btn" data-focusable="true" data-type="nav" data-screen="search">🔎 Search</button>
+    <button class="nav-btn" data-focusable="true" data-type="nav" data-screen="continue">⏯ Continue</button>
+    <button class="nav-btn" data-focusable="true" data-type="nav" data-screen="login">👤 Account</button>
+</aside>
+
+<main class="main">
+    <section class="screen active" id="screen-home">
+        <div class="hero">
+            <div class="hero-content">
+                <div class="eyebrow">Featured tonight</div>
+                <h1>Реальные данные с твоего Python backend</h1>
+                <p>Home уже получает фильмы, details открываются, а теперь добавим стабильный player flow.</p>
+                <div class="btn-row">
+                    <button class="action-btn primary" data-focusable="true" data-type="hero-reload">↻ Reload</button>
+                    <button class="action-btn secondary" data-focusable="true" data-type="hero-details">ℹ Details
+                    </button>
+                </div>
+            </div>
+        </div>
+        <div class="content" id="home-content"></div>
+    </section>
+
+    <section class="screen" id="screen-search">
+        <div class="search-wrap">
+            <h2 class="screen-title">Search</h2>
+            <div class="screen-desc">Пока поиск берёт запрос matrix. Потом сделаем полноценный live search.</div>
+            <div class="search-bar">
+                <input class="search-input" id="searchInput" value="matrix" data-focusable="true"
+                       data-type="search-input"/>
+                <button class="icon-btn" data-focusable="true" data-type="search-run">Search</button>
+            </div>
+            <div class="results-grid" id="search-results"></div>
+        </div>
+    </section>
+
+    <section class="screen" id="screen-continue">
+        <div class="content" id="continue-content-wrap">
+            <div id="continue-content">
+                <div class="empty-box">Здесь будут недосмотренные фильмы и серии.</div>
+            </div>
+        </div>
+    </section>
+
+    <section class="screen" id="screen-login">
+        <div class="login-wrap">
+            <div class="login-card">
+                <h2 class="screen-title">Sign in</h2>
+                <div class="screen-desc">Это пока UI-заглушка. Реальный вход подключим позже.</div>
+                <label class="field-label">Email</label>
+                <input class="field-input" id="login-email" data-focusable="true" data-type="login-email" value=""/>
+
+                <label class="field-label">Password</label>
+                <input class="field-input" id="login-password" type="password" data-focusable="true"
+                       data-type="login-password" value=""/>
+                <div class="btn-row" style="margin-top:22px;">
+                    <button class="action-btn primary" data-focusable="true" data-type="login-submit">Sign In</button>
+                </div>
+                <div id="login-status" class="hint" style="margin-top:18px;">Not logged in</div>
+                <div class="hint">Стрелки — перемещение. Enter — выбор. Backspace — назад.</div>
+            </div>
+        </div>
+    </section>
+
+    <section class="screen" id="screen-details">
+        <div class="details-wrap" id="details-content"></div>
+
+        <div id="preplay-modal" style="display:none; position:fixed; inset:0; background:rgba(5,8,14,0.82); z-index:1200; align-items:center; justify-content:center; padding:28px; backdrop-filter:blur(10px);">
+            <div style="width:min(920px, 92vw); max-height:88vh; overflow:auto; background:linear-gradient(180deg, rgba(34,39,47,0.98), rgba(19,23,30,0.98)); border:1px solid rgba(255,255,255,0.12); border-radius:30px; box-shadow:0 30px 90px rgba(0,0,0,0.45); padding:36px;">
+                <div class="eyebrow" style="margin-bottom:10px; color:#ff6a55; letter-spacing:0.08em;">Before starting</div>
+                <div id="preplay-title" style="font-size:52px; font-weight:800; line-height:1.02; margin-bottom:12px;">Choose options</div>
+                <div id="preplay-desc" class="screen-desc" style="max-width:760px; margin-bottom:24px; font-size:24px; line-height:1.45; color:rgba(255,255,255,0.82);">Choose the desired voice acting and, for series, confirm season and episode before playback starts.</div>
+
+                <div style="display:grid; gap:18px;">
+                    <div style="padding:24px; border:1px solid rgba(255,255,255,0.12); border-radius:22px; background:linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03)); box-shadow:inset 0 1px 0 rgba(255,255,255,0.05);">
+                        <div class="eyebrow" style="margin-bottom:12px; opacity:0.85;">Selected now</div>
+                        <div id="preplay-selection" style="font-size:30px; font-weight:700; line-height:1.35; letter-spacing:0.01em;">Ready to play</div>
+                    </div>
+
+                    <div style="padding:24px; border:1px solid rgba(255,255,255,0.12); border-radius:22px; background:linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03)); position:relative; box-shadow:inset 0 1px 0 rgba(255,255,255,0.05);">
+                        <div class="eyebrow" style="margin-bottom:12px; opacity:0.85;">Voice acting</div>
+
+                        <button id="translator-select-trigger"
+                                class="action-btn secondary"
+                                data-focusable="true"
+                                data-type="preplay-translator-toggle"
+                                style="width:100%; justify-content:space-between; text-align:left; min-height:82px; padding:0 24px; border-radius:18px; font-size:24px; background:rgba(255,255,255,0.10);">
+                            <span id="translator-select-label">Choose voice acting</span>
+                            <span style="font-size:28px; opacity:0.9;">▾</span>
+                        </button>
+
+                        <div id="translator-buttons"
+                             style="display:none; margin-top:14px; padding:14px; border:1px solid rgba(255,255,255,0.10); border-radius:20px; background:rgba(8,10,16,0.78); box-shadow:0 16px 36px rgba(0,0,0,0.24);">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="btn-row" style="margin-top:28px; gap:14px; flex-wrap:wrap; align-items:stretch;">
+                    <button class="action-btn primary" data-focusable="true" data-type="preplay-start" style="min-width:280px; min-height:82px; font-size:24px; border-radius:18px;">▶ Start playback</button>
+                    <button class="action-btn secondary" data-focusable="true" data-type="preplay-cancel" style="min-width:220px; min-height:82px; font-size:24px; border-radius:18px;">✕ Cancel</button>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="screen" id="screen-player">
+        <div class="player-wrap" style="padding:0; max-width:none; width:100%; height:100vh;">
+            <div id="player-stage" style="position:relative; width:100%; height:100vh; background:#000; overflow:hidden;">
+                <video id="player-video" playsinline crossorigin="anonymous"
+                       style="width:100%; height:100%; object-fit:contain; background:#000;"></video>
+                <div id="player-ui-overlay" style="position:absolute; inset:0; display:flex; flex-direction:column; justify-content:space-between; padding:34px; background:linear-gradient(180deg, rgba(0,0,0,0.52) 0%, rgba(0,0,0,0.18) 20%, rgba(0,0,0,0.02) 45%, rgba(0,0,0,0.22) 68%, rgba(0,0,0,0.74) 100%); pointer-events:none;">
+                    <div style="display:flex; flex-direction:column; gap:14px; max-width:min(920px, 82vw); pointer-events:auto;">
+                        <div class="eyebrow" style="letter-spacing:0.08em; opacity:0.82;">Now playing</div>
+                        <h2 class="screen-title" id="player-title" style="font-size:54px; line-height:1.03; margin:0;">Loading stream...</h2>
+                        <div class="screen-desc" id="player-desc" style="font-size:24px; line-height:1.45; color:rgba(255,255,255,0.84); max-width:min(900px, 78vw);">Сейчас получим stream URL с backend.</div>
+                        <div id="player-meta" class="tag-row" style="gap:10px; flex-wrap:wrap;">
+                            <span class="tag" id="player-status-tag">Idle</span>
+                            <span class="tag" id="player-translator-tag">Translator: —</span>
+                            <span class="tag" id="player-quality-tag">Quality: —</span>
+                            <span class="tag" id="player-subtitle-tag">Subtitles: Off</span>
+                        </div>
+                    </div>
+
+                    <div style="display:flex; flex-direction:column; gap:18px; pointer-events:auto;">
+                        <div id="player-series-panel" style="display:none; max-width:min(760px, 80vw);"></div>
+
+                        <div class="player-controls-shell" style="display:flex; flex-direction:column; gap:18px; width:100%; max-width:none;">
+                            <div id="player-progress-shell" style="display:flex; flex-direction:column; gap:10px; width:100%; max-width:min(980px, 94vw); pointer-events:auto;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; font-size:16px; color:rgba(255,255,255,0.86);">
+                                    <span id="player-current-time">0:00</span>
+                                    <span id="player-total-time">0:00</span>
+                                </div>
+                                <button id="player-seekbar"
+                                        class="action-btn secondary"
+                                        data-focusable="true"
+                                        data-type="player-seekbar"
+                                        style="width:100%; min-height:34px; padding:8px 10px; border-radius:999px; background:rgba(255,255,255,0.10); display:flex; align-items:center; justify-content:center;">
+                                    <div style="width:100%; height:10px; border-radius:999px; background:rgba(255,255,255,0.14); overflow:hidden;">
+                                        <div id="player-seekbar-fill" style="width:0%; height:100%; border-radius:999px; background:#57a6ff;"></div>
+                                    </div>
+                                </button>
+                                <div id="player-seekbar-hint" style="font-size:14px; color:rgba(255,255,255,0.68); text-align:center;">↑ focus seek bar • ←/→ seek 10s • ↓ back to controls</div>
+                            </div>
+
+                            <div style="display:flex; flex-direction:column; gap:12px;">
+                                <div class="eyebrow" style="opacity:0.82;">Playback</div>
+                                <div class="btn-row" style="gap:12px; flex-wrap:wrap;">
+                                    <button class="action-btn primary" data-focusable="true" data-type="player-toggle">⏯ Play / Pause</button>
+                                    <button class="action-btn secondary" data-focusable="true" data-type="player-restart">↺ Restart</button>
+                                    <button class="action-btn secondary" data-focusable="true" data-type="player-back">← Back</button>
+                                </div>
+                            </div>
+
+                            <div id="player-episode-controls-group">
+                                <div class="eyebrow" style="margin-bottom:10px; opacity:0.82;">Episode controls</div>
+                                <div class="btn-row" style="gap:12px; flex-wrap:wrap;">
+                                    <button class="action-btn secondary" data-focusable="true" data-type="player-prev-episode">⏮ Prev Episode</button>
+                                    <button class="action-btn secondary" data-focusable="true" data-type="player-next-episode">⏭ Next Episode</button>
+                                    <button id="player-episodes-btn" class="action-btn secondary" data-focusable="true" data-type="player-episodes-toggle">📺 Episodes</button>
+                                    <button class="action-btn secondary" data-focusable="true" data-type="player-autoplay-toggle">Autoplay: On</button>
+                                </div>
+                            </div>
+
+                            <div style="display:flex; flex-direction:column; gap:12px;">
+                                <div class="eyebrow" style="opacity:0.82;">Playback options</div>
+                                <div id="quality-buttons" class="btn-row" style="gap:12px; flex-wrap:wrap;"></div>
+                                <div id="subtitle-buttons" class="btn-row" style="gap:12px; flex-wrap:wrap;"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="next-episode-overlay"
+                     style="display:none; position:absolute; right:28px; bottom:28px; background:linear-gradient(180deg, rgba(14,18,27,0.96), rgba(8,10,16,0.96)); border:1px solid rgba(255,255,255,0.14); border-radius:20px; padding:22px; min-width:360px; box-shadow:0 20px 50px rgba(0,0,0,0.45); z-index:20; backdrop-filter:blur(10px);">
+                    <div style="font-size:13px; letter-spacing:0.08em; text-transform:uppercase; opacity:0.7; margin-bottom:10px;">Up next</div>
+                    <div id="next-episode-title" style="font-size:24px; font-weight:800; line-height:1.2; margin-bottom:10px;">Next episode</div>
+                    <div id="next-episode-countdown" style="font-size:16px; opacity:0.9; margin-bottom:16px;">Next episode in 5s</div>
+                    <div class="btn-row" style="gap:10px;">
+                        <button class="action-btn primary" data-focusable="true" data-type="next-episode-confirm">▶ Play now</button>
+                        <button class="action-btn secondary" data-focusable="true" data-type="next-episode-cancel">✕ Cancel</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+</main>
+
+<script src="js/main.js"></script>
+
+</body>
+</html>
