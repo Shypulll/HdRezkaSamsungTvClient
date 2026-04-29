@@ -17,31 +17,33 @@
 
 <main class="main">
     <section class="screen active" id="screen-home">
-        <div class="hero">
-            <div class="hero-content">
-                <div class="eyebrow">Featured tonight</div>
-                <h1>Реальные данные с твоего Python backend</h1>
-                <p>Home уже получает фильмы, details открываются, а теперь добавим стабильный player flow.</p>
-                <div class="btn-row">
-                    <button class="action-btn primary" data-focusable="true" data-type="hero-reload">↻ Reload</button>
-                    <button class="action-btn secondary" data-focusable="true" data-type="hero-details">ℹ Details
-                    </button>
+        <div class="content home-layout" id="home-content">
+            <section class="home-section" id="home-newest-section">
+                <div id="home-newest-content">
+                    <div class="empty-box">Новинки появятся здесь после загрузки.</div>
                 </div>
-            </div>
+            </section>
+
+            <section class="home-section" id="home-popular-section">
+                <div id="home-popular-content">
+                    <div class="empty-box">Популярное появится здесь после загрузки.</div>
+                </div>
+            </section>
         </div>
-        <div class="content" id="home-content"></div>
     </section>
 
     <section class="screen" id="screen-search">
         <div class="search-wrap">
             <h2 class="screen-title">Search</h2>
-            <div class="screen-desc">Пока поиск берёт запрос matrix. Потом сделаем полноценный live search.</div>
+            <div class="screen-desc">Введите название фильма или сериала и нажмите Search.</div>
             <div class="search-bar">
-                <input class="search-input" id="searchInput" value="matrix" data-focusable="true"
+                <input class="search-input" id="searchInput" value="" data-focusable="true"
                        data-type="search-input"/>
                 <button class="icon-btn" data-focusable="true" data-type="search-run">Search</button>
             </div>
-            <div class="results-grid" id="search-results"></div>
+            <div class="results-grid" id="search-results">
+                <div class="empty-box" style="grid-column: 1 / -1;">Введите запрос для поиска.</div>
+            </div>
         </div>
     </section>
 
@@ -86,6 +88,11 @@
                     <div style="padding:24px; border:1px solid rgba(255,255,255,0.12); border-radius:22px; background:linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03)); box-shadow:inset 0 1px 0 rgba(255,255,255,0.05);">
                         <div class="eyebrow" style="margin-bottom:12px; opacity:0.85;">Selected now</div>
                         <div id="preplay-selection" style="font-size:30px; font-weight:700; line-height:1.35; letter-spacing:0.01em;">Ready to play</div>
+                    </div>
+
+                    <div id="preplay-series-block" style="display:none; padding:24px; border:1px solid rgba(255,255,255,0.12); border-radius:22px; background:linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03)); box-shadow:inset 0 1px 0 rgba(255,255,255,0.05);">
+                        <div class="eyebrow" style="margin-bottom:12px; opacity:0.85;">Season and episode</div>
+                        <div id="preplay-series-options" style="display:grid; gap:16px;"></div>
                     </div>
 
                     <div style="padding:24px; border:1px solid rgba(255,255,255,0.12); border-radius:22px; background:linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03)); position:relative; box-shadow:inset 0 1px 0 rgba(255,255,255,0.05);">
