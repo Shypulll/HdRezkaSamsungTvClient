@@ -6,6 +6,8 @@ BUILD_DIR="${BUILD_DIR:-/tmp/HDRezka-tizen-build}"
 SERVER_DIR="${SERVER_DIR:-$HOME/.tizen-extension-platform/server}"
 CONN_FILE="$SERVER_DIR/conn.json"
 SDB="${SDB:-$SERVER_DIR/sdktools/data/tools/sdb}"
+TZ_CLI="${TZ_CLI:-$SERVER_DIR/sdktools/data/tools/tizen-core/tz}"
+SIGN_PROFILE="${SIGN_PROFILE:-hdrezka_samsung}"
 
 DEVICE_IP="${DEVICE_IP:-10.0.0.241}"
 DEVICE="${DEVICE:-$DEVICE_IP:26101}"
@@ -26,79 +28,6 @@ require_file() {
   [[ -e "$1" ]] || fail "Не найден файл: $1"
 }
 
-json_value() {
-  python3 - "$1" "$2" <<'PY'
-import json
-import sys
-
-path, key = sys.argv[1], sys.argv[2]
-with open(path, "r", encoding="utf-8") as f:
-    print(json.load(f)[key])
-PY
-}
-
-server_port() {
-  json_value "$CONN_FILE" port
-}
-
-server_token() {
-  json_value "$CONN_FILE" token
-}
-
-tizen_api() {
-  local method="$1"
-  local path="$2"
-  local body="${3:-}"
-  local port token
-
-  port="$(server_port)"
-  token="$(server_token)"
-
-  if [[ -n "$body" ]]; then
-    curl -sS -X "$method" \
-      -H "Authorization: Bearer $token" \
-      -H 'Content-Type: application/json' \
-      -d "$body" \
-      "http://127.0.0.1:$port$path"
-  else
-    curl -sS -X "$method" \
-      -H "Authorization: Bearer $token" \
-      "http://127.0.0.1:$port$path"
-  fi
-}
-
-server_is_healthy() {
-  [[ -f "$CONN_FILE" ]] || return 1
-  local port token
-  port="$(server_port)"
-  token="$(server_token)"
-  curl -fsS -H "Authorization: Bearer $token" \
-    "http://127.0.0.1:$port/api/v1/health" >/dev/null 2>&1
-}
-
-ensure_tizen_server() {
-  require_file "$SERVER_DIR/run.sh"
-
-  if server_is_healthy; then
-    log "Tizen server уже запущен"
-    return
-  fi
-
-  log "Запускаю Tizen server"
-  nohup env TIZEN_SERVER_PORT=0 "$SERVER_DIR/run.sh" \
-    >/tmp/hdrezka-tizen-server.log 2>&1 &
-
-  for _ in {1..40}; do
-    if server_is_healthy; then
-      log "Tizen server готов"
-      return
-    fi
-    sleep 1
-  done
-
-  fail "Tizen server не запустился. Лог: /tmp/hdrezka-tizen-server.log"
-}
-
 ensure_tv_connected() {
   require_file "$SDB"
 
@@ -116,6 +45,8 @@ reconnect_tv() {
 }
 
 build_wgt() {
+  require_file "$TZ_CLI"
+
   log "Готовлю чистую временную копию проекта"
   rm -rf "$BUILD_DIR"
   mkdir -p "$BUILD_DIR"
@@ -124,25 +55,24 @@ build_wgt() {
     --exclude='Debug' \
     --exclude='*.wgt' \
     --exclude='.DS_Store' \
+    --exclude='.idea' \
+    --exclude='cache' \
+    --exclude='deploy-tv.sh' \
     "$PROJECT_DIR/" "$BUILD_DIR/"
 
-  log "Собираю и подписываю .wgt"
-  local response response_file package_path
-  response="$(tizen_api POST /api/v1/project/build "{\"projectDir\":\"$BUILD_DIR\"}")"
-  response_file="$(mktemp)"
-  printf '%s' "$response" > "$response_file"
-  package_path="$(python3 - "$response_file" <<'PY'
-import json
-import sys
+  log "Проверяю профиль подписи $SIGN_PROFILE"
+  "$TZ_CLI" security-profiles list | grep -q "^$SIGN_PROFILE$" \
+    || fail "Профиль подписи '$SIGN_PROFILE' не найден. Создай/выбери Samsung certificate profile в VS Code."
 
-with open(sys.argv[1], "r", encoding="utf-8") as f:
-    data = json.load(f)
-if data.get("status") != "success":
-    raise SystemExit(data.get("message", "Build failed"))
-print(data["packagePath"])
-PY
-)"
-  rm -f "$response_file"
+  log "Собираю проект через tz"
+  "$TZ_CLI" build -w "$BUILD_DIR" -s "$SIGN_PROFILE" -b Debug
+
+  log "Подписываю .wgt через tz"
+  "$TZ_CLI" pack -w "$BUILD_DIR" -s "$SIGN_PROFILE" -t wgt
+
+  local package_path
+  package_path="$(find "$BUILD_DIR/Debug" -maxdepth 1 -type f -name '*.wgt' | head -n 1)"
+  [[ -n "$package_path" ]] || fail "tz pack не создал .wgt в $BUILD_DIR/Debug"
 
   cp "$package_path" "$WGT"
   log "Готов пакет: $WGT"
@@ -164,7 +94,20 @@ install_and_run() {
 
 main() {
   require_file "$PROJECT_DIR/config.xml"
-  ensure_tizen_server
+
+  case "${1:-deploy}" in
+    build)
+      build_wgt
+      log "Сборка готова без установки на TV"
+      return
+      ;;
+    deploy)
+      ;;
+    *)
+      fail "Неизвестная команда '$1'. Используй: $0 [build|deploy]"
+      ;;
+  esac
+
   ensure_tv_connected
   build_wgt
   install_and_run

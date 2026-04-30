@@ -424,6 +424,370 @@ async function fetchStreamData(streamRequest, fallbackMessage) {
     throw lastError || new Error(fallbackMessage);
 }
 
+function isSamsungAvplayAvailable() {
+    return typeof window !== 'undefined'
+        && window.webapis
+        && window.webapis.avplay
+        && typeof window.webapis.avplay.open === 'function';
+}
+
+function isSamsungAvplayActive() {
+    return samsungAvplayState.active && isSamsungAvplayAvailable();
+}
+function ensureSamsungAvplayObject() {
+    let objectEl = document.getElementById('samsung-avplay-object');
+    const stage = document.getElementById('player-stage') || document.getElementById('screen-player') || document.body;
+
+    if (!objectEl) {
+        objectEl = document.createElement('object');
+        objectEl.id = 'samsung-avplay-object';
+        objectEl.type = 'application/avplayer';
+        objectEl.setAttribute('data-avplay-object', 'true');
+        stage.insertBefore(objectEl, stage.firstChild);
+    } else if (objectEl.parentElement !== stage) {
+        stage.insertBefore(objectEl, stage.firstChild);
+    }
+
+    Object.assign(objectEl.style, {
+        display: 'block',
+        visibility: 'visible',
+        opacity: '1',
+        position: 'absolute',
+        left: '0',
+        top: '0',
+        width: '100vw',
+        height: '100vh',
+        minWidth: '100vw',
+        minHeight: '100vh',
+        zIndex: '5',
+        background: 'transparent',
+        pointerEvents: 'none'
+    });
+    return objectEl;
+}
+function getSamsungAvplayState() {
+    if (!isSamsungAvplayAvailable()) return 'NONE';
+    try {
+        return window.webapis.avplay.getState();
+    } catch (e) {
+        return 'NONE';
+    }
+}
+
+function updateSamsungAvplayClock() {
+    if (!isSamsungAvplayActive()) return;
+
+    try {
+        samsungAvplayState.currentTime = Math.max(0, Number(window.webapis.avplay.getCurrentTime() || 0) / 1000);
+    } catch (e) {
+    }
+
+    try {
+        samsungAvplayState.duration = Math.max(0, Number(window.webapis.avplay.getDuration() || 0) / 1000);
+    } catch (e) {
+    }
+}
+
+function getPlaybackCurrentTime(video = document.getElementById('player-video')) {
+    if (isSamsungAvplayActive()) {
+        updateSamsungAvplayClock();
+        return samsungAvplayState.currentTime || 0;
+    }
+    return Number(video?.currentTime || 0);
+}
+
+function getPlaybackDuration(video = document.getElementById('player-video')) {
+    if (isSamsungAvplayActive()) {
+        updateSamsungAvplayClock();
+        return samsungAvplayState.duration || 0;
+    }
+    return Number(video?.duration || 0);
+}
+
+function isPlaybackPaused(video = document.getElementById('player-video')) {
+    if (!isSamsungAvplayActive()) return !video || video.paused;
+    const state = getSamsungAvplayState();
+    return samsungAvplayState.paused || state === 'PAUSED' || state === 'READY' || state === 'IDLE' || state === 'NONE';
+}
+
+function setSamsungAvplayDisplay() {
+    if (!isSamsungAvplayAvailable()) return;
+
+    const objectEl = ensureSamsungAvplayObject();
+
+    if (objectEl) {
+        Object.assign(objectEl.style, {
+            display: 'block',
+            visibility: 'visible',
+            opacity: '1',
+            position: 'absolute',
+            left: '0',
+            top: '0',
+            width: '100vw',
+            height: '100vh',
+            minWidth: '100vw',
+            minHeight: '100vh',
+            zIndex: '5',
+            background: 'transparent',
+            pointerEvents: 'none'
+        });
+    }
+
+    try {
+        window.webapis.avplay.setDisplayRect(
+            0,
+            0,
+            window.innerWidth || 1920,
+            window.innerHeight || 1080
+        );
+    } catch (e) {
+        console.warn('AVPlay setDisplayRect failed:', e);
+    }
+
+    try {
+        const method = (currentVideoFitMode || playerPrefs.preferredFitMode || 'contain') === 'zoom'
+            ? 'PLAYER_DISPLAY_MODE_FULL_SCREEN'
+            : 'PLAYER_DISPLAY_MODE_AUTO_ASPECT_RATIO';
+
+        window.webapis.avplay.setDisplayMethod(method);
+    } catch (e) {
+        console.warn('AVPlay setDisplayMethod failed:', e);
+    }
+}
+function resetSamsungAvplayState() {
+    samsungAvplayState.active = false;
+    samsungAvplayState.url = '';
+    samsungAvplayState.currentTime = 0;
+    samsungAvplayState.duration = 0;
+    samsungAvplayState.paused = true;
+    samsungAvplayState.playbackKey = '';
+    samsungAvplayPersistSecond = -1;
+}
+
+function stopSamsungAvplay({keepState = false} = {}) {
+    if (samsungAvplayProgressTimer) {
+        clearInterval(samsungAvplayProgressTimer);
+        samsungAvplayProgressTimer = null;
+    }
+
+    if (isSamsungAvplayAvailable()) {
+        try {
+            const state = getSamsungAvplayState();
+            if (state && state !== 'NONE' && state !== 'IDLE') {
+                window.webapis.avplay.stop();
+            }
+        } catch (e) {
+        }
+
+        try {
+            window.webapis.avplay.close();
+        } catch (e) {
+        }
+    }
+
+    if (!keepState) resetSamsungAvplayState();
+
+    const objectEl = document.getElementById('samsung-avplay-object');
+    if (objectEl) {
+        objectEl.style.display = 'none';
+        objectEl.style.visibility = 'hidden';
+        objectEl.style.opacity = '0';
+    }
+
+    const video = document.getElementById('player-video');
+    if (video) {
+        video.style.display = 'block';
+        video.style.visibility = '';
+        video.style.opacity = '';
+        video.style.zIndex = '2';
+        video.style.background = '#000';
+    }
+}
+
+function startSamsungAvplayProgressTimer(onEnded) {
+    if (samsungAvplayProgressTimer) clearInterval(samsungAvplayProgressTimer);
+
+    samsungAvplayProgressTimer = setInterval(() => {
+        if (!isSamsungAvplayActive()) return;
+
+        updateSamsungAvplayClock();
+        updatePlayerProgressUI();
+
+        const second = Math.floor(samsungAvplayState.currentTime || 0);
+        if (second > 0 && second % 15 === 0 && second !== samsungAvplayPersistSecond) {
+            samsungAvplayPersistSecond = second;
+            persistCurrentPlaybackProgress({currentTime: second});
+        }
+
+        if (
+            autoplayNextEpisodeEnabled &&
+            isSeriesItem(currentSelectedItem) &&
+            samsungAvplayState.duration > 0 &&
+            (samsungAvplayState.duration - samsungAvplayState.currentTime) <= 0.75
+        ) {
+            onEnded?.();
+        }
+    }, 1000);
+}
+
+function seekPlaybackTo(seconds, video = document.getElementById('player-video')) {
+    const target = Math.max(0, Number(seconds || 0));
+
+    if (isSamsungAvplayActive()) {
+        try {
+            window.webapis.avplay.seekTo(Math.floor(target * 1000), () => {}, () => {});
+            samsungAvplayState.currentTime = target;
+        } catch (e) {
+        }
+        updatePlayerProgressUI();
+        return;
+    }
+
+    if (video) video.currentTime = target;
+}
+
+async function playCurrentPlayback(video = document.getElementById('player-video')) {
+    if (isSamsungAvplayActive()) {
+        try {
+            window.webapis.avplay.play();
+            samsungAvplayState.paused = false;
+            playerStatus = 'Playing';
+            schedulePlayerOverlayAutoHide(2400);
+        } catch (e) {
+        }
+        return;
+    }
+
+    await video?.play?.();
+}
+
+function pauseCurrentPlayback(video = document.getElementById('player-video')) {
+    if (isSamsungAvplayActive()) {
+        try {
+            window.webapis.avplay.pause();
+            samsungAvplayState.paused = true;
+            playerStatus = 'Paused';
+            keepPlayerOverlayVisible();
+        } catch (e) {
+        }
+        return;
+    }
+
+    video?.pause?.();
+}
+
+async function startSamsungAvplayStream(streamUrl, {resumeSeconds = 0, playbackKey = '', onEnded = null} = {}) {
+    if (!isSamsungAvplayAvailable() || !streamUrl) return false;
+    const htmlVideo = document.getElementById('player-video');
+    const avplayObject = ensureSamsungAvplayObject();
+
+    if (htmlVideo) {
+        htmlVideo.pause?.();
+        htmlVideo.removeAttribute('src');
+        htmlVideo.load?.();
+
+        htmlVideo.style.display = 'none';
+        htmlVideo.style.visibility = 'hidden';
+        htmlVideo.style.opacity = '0';
+        htmlVideo.style.zIndex = '-1';
+        htmlVideo.style.background = 'transparent';
+    }
+
+    if (avplayObject) {
+        avplayObject.style.display = 'block';
+        avplayObject.style.visibility = 'visible';
+        avplayObject.style.opacity = '1';
+    }
+    setSamsungAvplayDisplay();
+
+    const video = document.getElementById('player-video');
+    if (video) {
+        clearVideoPlaybackHandlers(video);
+        video.pause?.();
+        video.removeAttribute('src');
+        video.load?.();
+        video.style.display = 'none';
+        video.style.visibility = 'hidden';
+        video.style.opacity = '0';
+        video.style.zIndex = '-1';
+        video.style.background = 'transparent';
+    }
+
+    stopSamsungAvplay({keepState: true});
+    resetSamsungAvplayState();
+    samsungAvplayState.active = true;
+    samsungAvplayState.url = streamUrl;
+    samsungAvplayState.paused = true;
+    samsungAvplayState.playbackKey = playbackKey;
+    samsungAvplayPersistSecond = -1;
+
+    return await new Promise((resolve, reject) => {
+        try {
+            window.webapis.avplay.open(streamUrl);
+            setSamsungAvplayDisplay();
+            setTimeout(setSamsungAvplayDisplay, 50);
+
+            window.webapis.avplay.setListener({
+                onbufferingstart: () => {
+                    playerStatus = 'Buffering';
+                    updatePlayerMeta();
+                },
+                onbufferingcomplete: () => {
+                    playerStatus = samsungAvplayState.paused ? 'Paused' : 'Playing';
+                    updatePlayerMeta();
+                },
+                onstreamcompleted: () => {
+                    samsungAvplayState.paused = true;
+                    playerStatus = 'Ended';
+                    updatePlayerMeta();
+                    onEnded?.();
+                },
+                oncurrentplaytime: (timeMs) => {
+                    samsungAvplayState.currentTime = Math.max(0, Number(timeMs || 0) / 1000);
+                    updatePlayerProgressUI();
+                },
+                onerror: (error) => {
+                    reject(new Error(`AVPlay error: ${error}`));
+                }
+            });
+
+            window.webapis.avplay.prepareAsync(() => {
+                try {
+                    updateSamsungAvplayClock();
+                    setSamsungAvplayDisplay();
+
+                    if (resumeSeconds > 0) {
+                        window.webapis.avplay.seekTo(Math.floor(resumeSeconds * 1000), () => {}, () => {});
+                        samsungAvplayState.currentTime = resumeSeconds;
+                    }
+
+                    window.webapis.avplay.play();
+
+                    samsungAvplayState.paused = false;
+                    playerStatus = 'Playing';
+
+                    setTimeout(setSamsungAvplayDisplay, 100);
+                    setTimeout(setSamsungAvplayDisplay, 500);
+
+                    updatePlayerMeta();
+                    updatePlayerProgressUI();
+                    startSamsungAvplayProgressTimer(onEnded);
+
+                    schedulePlayerOverlayAutoHide(2600);
+
+                    resolve(true);
+                } catch (e) {
+                    reject(e);
+                }
+            }, error => {
+                reject(new Error(`AVPlay prepare failed: ${error}`));
+            });
+        } catch (e) {
+            reject(e);
+        }
+    });
+}
+
 function isSupportedQualityLabel(quality) {
     return /^(?:\d{3,4}p(?:\s+Ultra)?|[248]K)$/i.test(String(quality || "").trim());
 }
@@ -803,11 +1167,56 @@ let autoplayHandledPlaybackKey = null;
 let currentDetailsRequestToken = 0;
 let currentPlayerRequestToken = 0;
 let ratingEnrichmentToken = 0;
+let samsungAvplayProgressTimer = null;
+let samsungAvplayPersistSecond = -1;
+const samsungAvplayState = {
+    active: false,
+    url: '',
+    currentTime: 0,
+    duration: 0,
+    paused: true,
+    playbackKey: ''
+};
 const BACKGROUND_RATING_ENRICH_ENABLED = false;
 const FOCUSED_CARD_PRELOAD_ENABLED = false;
 const HOME_RATING_ENRICH_LIMIT = 8;
 const SEARCH_RATING_ENRICH_LIMIT = 10;
 
+
+function setPlayerOverlayVisible(visible) {
+    const overlay = document.getElementById('player-ui-overlay');
+    if (!overlay) return;
+
+    isPlayerOverlayVisible = !!visible;
+    overlay.style.transition = 'opacity 220ms ease, visibility 220ms ease';
+    overlay.style.opacity = visible ? '1' : '0';
+    overlay.style.visibility = visible ? 'visible' : 'hidden';
+    overlay.style.pointerEvents = visible ? 'auto' : 'none';
+}
+
+function schedulePlayerOverlayAutoHide(delay = 3200) {
+    clearTimeout(playerOverlayHideTimer);
+    setPlayerOverlayVisible(true);
+
+    playerOverlayHideTimer = setTimeout(() => {
+        const video = document.getElementById('player-video');
+        const isPaused = isSamsungAvplayActive()
+            ? !!samsungAvplayState.paused
+            : !!video?.paused;
+
+        if (currentScreen === 'player' && !isPaused) {
+            setPlayerOverlayVisible(false);
+        }
+    }, delay);
+}
+function keepPlayerOverlayVisible() {
+    clearTimeout(playerOverlayHideTimer);
+    setPlayerOverlayVisible(true);
+}
+
+function showPlayerOverlayAndSchedule(delay = 2600) {
+    schedulePlayerOverlayAutoHide(delay);
+}
 // =========================
 // GENERAL HELPERS
 // =========================
@@ -885,15 +1294,13 @@ async function syncCurrentPlaybackToRemote(options = {}) {
 
     if (!force && now - lastRemoteSyncAt < 15000) return;
 
-    const video = document.getElementById('player-video');
-
     const payload = {
         sourceUrl: currentSelectedItem.sourceUrl,
         translationId: currentTranslationId || 0,
         season: currentSelectedSeason || 0,
         episode: currentSelectedEpisode || 0,
-        currentTime: Math.floor(video?.currentTime || 0),
-        duration: Math.floor(video?.duration || 0)
+        currentTime: Math.floor(getPlaybackCurrentTime()),
+        duration: Math.floor(getPlaybackDuration())
     };
 
     lastRemoteSyncAt = now;
@@ -1959,7 +2366,7 @@ async function switchTranslator(translationId) {
     const video = document.getElementById('player-video');
     if (!video) return;
 
-    const currentTime = video.currentTime || 0;
+    const currentTime = getPlaybackCurrentTime(video);
     const preferredQuality = currentQuality;
     persistCurrentPlaybackProgress({currentTime});
     resetSubtitleState();
@@ -1998,6 +2405,32 @@ async function switchTranslator(translationId) {
 
         if (!isCurrentPlayerRequest(playerRequestToken, requestSourceUrl)) return;
         clearVideoPlaybackHandlers(video);
+
+        if (isSamsungAvplayAvailable()) {
+            try {
+                await startSamsungAvplayStream(streamUrl, {
+                    resumeSeconds: currentTime,
+                    playbackKey: `${requestSourceUrl}__${currentSelectedSeason || ''}__${currentSelectedEpisode || ''}__${Date.now()}`,
+                    onEnded: () => triggerAutoplayNextEpisode(samsungAvplayState.playbackKey)
+                });
+
+                if (desc) {
+                    desc.textContent = currentTranslatorPremium
+                        ? 'Premium-озвучка выбрана.'
+                        : 'Озвучка переключена.';
+                }
+
+                renderQualityButtons();
+                resetSubtitleState({video, clearTracks: true, updateMeta: true});
+                pendingSubtitleLanguage = null;
+                updatePlayerMeta();
+                return;
+            } catch (avplayError) {
+                stopSamsungAvplay();
+                if (desc) desc.textContent = `AVPlay не переключил озвучку, пробуем обычный плеер: ${avplayError.message}`;
+            }
+        }
+
         video.src = streamUrl;
         video.load();
 
@@ -2211,13 +2644,13 @@ function renderQualityButtons() {
     scheduleRefreshFocusables(50);
 }
 
-function switchQuality(url, quality) {
+async function switchQuality(url, quality) {
     if (!url || !quality) return;
 
     const normalizedQuality = String(quality).trim();
     const normalizedCurrentQuality = String(currentQuality || '').trim();
     const video = document.getElementById("player-video");
-    const currentSrc = video?.currentSrc || video?.src || '';
+    const currentSrc = isSamsungAvplayActive() ? samsungAvplayState.url : (video?.currentSrc || video?.src || '');
 
     if (normalizedCurrentQuality === normalizedQuality && currentSrc === url) {
         showPlayerOverlayAndSchedule(1800);
@@ -2232,7 +2665,26 @@ function switchQuality(url, quality) {
 
     if (!video) return;
 
-    const currentTime = video.currentTime || 0;
+    const currentTime = getPlaybackCurrentTime(video);
+
+    if (isSamsungAvplayActive()) {
+        try {
+            await startSamsungAvplayStream(url, {
+                resumeSeconds: currentTime,
+                playbackKey: `${currentSelectedItem?.sourceUrl || ''}__${currentSelectedSeason || ''}__${currentSelectedEpisode || ''}__${Date.now()}`,
+                onEnded: () => triggerAutoplayNextEpisode(samsungAvplayState.playbackKey)
+            });
+
+            if (currentSubtitleLanguage !== 'off') {
+                resetSubtitleState({video, clearTracks: true, updateMeta: true});
+            }
+
+            showPlayerOverlayAndSchedule(1800);
+            return;
+        } catch (avplayError) {
+            stopSamsungAvplay();
+        }
+    }
 
     video.src = url;
     video.load();
@@ -2257,7 +2709,7 @@ function switchQuality(url, quality) {
 function persistCurrentPlaybackProgress(options = {}) {
     const video = document.getElementById('player-video');
     if (!video || !currentSelectedItem?.sourceUrl) return;
-    const currentTime = Number(options.currentTime ?? video.currentTime ?? 0);
+    const currentTime = Number(options.currentTime ?? getPlaybackCurrentTime(video) ?? 0);
     if (!currentTime || currentTime < 5) return;
 
     const isSeries = !!(currentSelectedSeason && currentSelectedEpisode);
@@ -3340,8 +3792,8 @@ function updatePlayerProgressUI(video = document.getElementById('player-video'))
     const seekBtn = document.getElementById('player-seekbar');
     if (!currentEl || !totalEl || !fillEl || !seekBtn) return;
 
-    const currentTime = Number(video?.currentTime || 0);
-    const duration = Number(video?.duration || 0);
+    const currentTime = getPlaybackCurrentTime(video);
+    const duration = getPlaybackDuration(video);
     const progress = duration > 0 ? Math.max(0, Math.min(100, (currentTime / duration) * 100)) : 0;
 
     currentEl.textContent = formatPlayerTime(currentTime);
@@ -3357,15 +3809,15 @@ function updatePlayerProgressUI(video = document.getElementById('player-video'))
 
 function seekPlayerBy(deltaSeconds) {
     const video = document.getElementById('player-video');
-    if (!video) return;
+    if (!video && !isSamsungAvplayActive()) return;
 
-    const duration = Number(video.duration || 0);
-    const current = Number(video.currentTime || 0);
+    const duration = getPlaybackDuration(video);
+    const current = getPlaybackCurrentTime(video);
     const target = duration > 0
         ? Math.max(0, Math.min(duration, current + deltaSeconds))
         : Math.max(0, current + deltaSeconds);
 
-    video.currentTime = target;
+    seekPlaybackTo(target, video);
     updatePlayerProgressUI(video);
     showPlayerOverlayAndSchedule(2200);
 }
@@ -3464,6 +3916,7 @@ function closePlayerToDetails() {
     nextPlayerRequestToken();
     clearNextEpisodeOverlay();
     persistCurrentPlaybackProgress();
+    stopSamsungAvplay();
 
     if (video) {
         clearVideoPlaybackHandlers(video);
@@ -3842,6 +4295,21 @@ async function openPlayerForSelected(initialTime = 0) {
         const playbackKey = `${requestSourceUrl}__${streamRequest.season || ''}__${streamRequest.episode || ''}__${Date.now()}`;
         video.dataset.playbackKey = playbackKey;
 
+        if (isSamsungAvplayAvailable()) {
+            try {
+                await startSamsungAvplayStream(streamUrl, {
+                    resumeSeconds: resumeTargetSeconds,
+                    playbackKey,
+                    onEnded: () => triggerAutoplayNextEpisode(playbackKey)
+                });
+                scheduleRefreshFocusables();
+                return;
+            } catch (avplayError) {
+                stopSamsungAvplay();
+                if (desc) desc.textContent = `AVPlay не запустился, пробуем обычный плеер: ${avplayError.message}`;
+            }
+        }
+
         video.dataset.resumeTarget = resumeTargetSeconds > 0 ? String(resumeTargetSeconds) : '';
         video.dataset.resumeSeeking = '';
         video.dataset.resumeApplied = resumeTargetSeconds > 0 ? '' : '1';
@@ -4194,8 +4662,26 @@ function restoreAppLayoutAfterPlayer() {
 }
 
 function applyFullscreenVideoPresentation(video = document.getElementById('player-video')) {
-    if (!video) return;
+    if (isSamsungAvplayActive()) {
+        setSamsungAvplayDisplay();
 
+        if (video) {
+            video.style.display = 'none';
+            video.style.visibility = 'hidden';
+            video.style.opacity = '0';
+            video.style.zIndex = '-1';
+            video.style.background = 'transparent';
+        }
+
+        return;
+    }
+
+    if (!video) return;
+    video.style.display = 'block';
+    video.style.visibility = 'visible';
+    video.style.opacity = '1';
+    video.style.zIndex = '2';
+    video.style.background = '#000';
     const fitMode = currentVideoFitMode || playerPrefs.preferredFitMode || 'contain';
     const isSeries = isSeriesItem(currentSelectedItem);
 
@@ -4265,7 +4751,7 @@ function updatePlayerToggleButtonLabel() {
     const video = document.getElementById('player-video');
     if (!btn) return;
 
-    btn.textContent = video && !video.paused ? '❚❚' : '▶';
+    btn.textContent = !isPlaybackPaused(video) ? '❚❚' : '▶';
     btn.style.display = 'inline-flex';
     btn.style.alignItems = 'center';
     btn.style.justifyContent = 'center';
@@ -4575,34 +5061,26 @@ function ensurePlayerOverlayControlLayout() {
 }
 
 
-function showPlayerOverlay() {
+function setPlayerOverlayVisible(visible) {
     const overlay = document.getElementById('player-ui-overlay');
     if (!overlay) return;
 
+    isPlayerOverlayVisible = !!visible;
     overlay.style.display = 'flex';
-    overlay.style.opacity = '1';
-    overlay.style.visibility = 'visible';
-    overlay.style.pointerEvents = 'auto';
-    isPlayerOverlayVisible = true;
+    overlay.style.transition = 'opacity 220ms ease, visibility 220ms ease';
+    overlay.style.opacity = visible ? '1' : '0';
+    overlay.style.visibility = visible ? 'visible' : 'hidden';
+    overlay.style.pointerEvents = visible ? 'auto' : 'none';
+}
+
+function showPlayerOverlay() {
+    clearPlayerOverlayHideTimer();
+    setPlayerOverlayVisible(true);
 }
 
 function hidePlayerOverlay() {
-    const overlay = document.getElementById('player-ui-overlay');
-    if (!overlay) return;
-
-    if (currentScreen !== 'player') return;
-    if (document.getElementById('preplay-modal')?.style.display === 'flex') return;
-    if (document.getElementById('next-episode-overlay')?.style.display === 'block') return;
-    if (isPlayerEpisodesOpen) return;
-    if (isQualityDropdownOpen) return;
-
-    focusPlayerToggleButton();
-    overlay.style.opacity = '0';
-    overlay.style.visibility = 'hidden';
-    overlay.style.pointerEvents = 'none';
-    isPlayerOverlayVisible = false;
+    setPlayerOverlayVisible(false);
 }
-
 function clearPlayerOverlayHideTimer() {
     if (playerOverlayHideTimer) {
         clearTimeout(playerOverlayHideTimer);
@@ -4614,21 +5092,25 @@ function schedulePlayerOverlayAutoHide(forceDelay = 2600) {
     clearPlayerOverlayHideTimer();
 
     if (currentScreen !== 'player') return;
-    const video = document.getElementById('player-video');
-    if (!video || video.paused) return;
     if (document.getElementById('next-episode-overlay')?.style.display === 'block') return;
     if (isPlayerEpisodesOpen) return;
+
+    const video = document.getElementById('player-video');
+    const isPaused = isSamsungAvplayActive()
+        ? !!samsungAvplayState.paused
+        : !!video?.paused;
+
+    showPlayerOverlay();
+
+    if (isPaused) return;
 
     playerOverlayHideTimer = setTimeout(() => {
         hidePlayerOverlay();
     }, forceDelay);
 }
-
-function showPlayerOverlayAndSchedule(forceDelay = 2600) {
+function keepPlayerOverlayVisible() {
     showPlayerOverlay();
-    schedulePlayerOverlayAutoHide(forceDelay);
 }
-
 function focusPlayerToggleButton({visibleOnly = false} = {}) {
     const toggleBtn = document.querySelector('#screen-player [data-type="player-toggle"]');
     if (!toggleBtn) return;
@@ -4648,7 +5130,7 @@ function focusPlayerToggleButton({visibleOnly = false} = {}) {
 
 async function activateFocused() {
     if (currentScreen === 'player') {
-        showPlayerOverlayAndSchedule(1800);
+        schedulePlayerOverlayAutoHide(2600);
     }
 
     const el = focusables[focusIndex];
@@ -4797,18 +5279,18 @@ async function activateFocused() {
             break;
         case 'player-toggle': {
             const video = document.getElementById('player-video');
-            if (!video) break;
+            if (!video && !isSamsungAvplayActive()) break;
 
-            if (video.paused) {
+            if (isPlaybackPaused(video)) {
                 try {
-                    await video.play();
+                    await playCurrentPlayback(video);
                     playerStatus = "Playing";
                     showPlayerOverlayAndSchedule(2600);
                 } catch (e) {
                 }
             } else {
                 persistCurrentPlaybackProgress();
-                video.pause();
+                pauseCurrentPlayback(video);
                 clearPlayerOverlayHideTimer();
                 showPlayerOverlay();
                 playerStatus = "Paused";
@@ -4818,10 +5300,10 @@ async function activateFocused() {
         }
         case 'player-restart': {
             const video = document.getElementById('player-video');
-            if (!video) break;
-            video.currentTime = 0;
+            if (!video && !isSamsungAvplayActive()) break;
+            seekPlaybackTo(0, video);
             try {
-                await video.play();
+                await playCurrentPlayback(video);
                 showPlayerOverlayAndSchedule(2600);
             } catch (e) {
             }
@@ -4876,7 +5358,7 @@ async function activateFocused() {
             const selectedQuality = String(el.dataset.quality || '').trim();
             const selectedUrl = String(el.dataset.url || '').trim();
             const video = document.getElementById('player-video');
-            const currentVideoUrl = String(video?.currentSrc || video?.src || '').trim();
+            const currentVideoUrl = String(isSamsungAvplayActive() ? samsungAvplayState.url : (video?.currentSrc || video?.src || '')).trim();
             const activeQualityUrl = String(currentStreams?.[currentQuality] || '').trim();
             const isSameQuality = selectedQuality === String(currentQuality || '').trim();
             const isSameUrl = !!selectedUrl && (selectedUrl === currentVideoUrl || selectedUrl === activeQualityUrl);
@@ -4892,7 +5374,7 @@ async function activateFocused() {
                 break;
             }
 
-            switchQuality(el.dataset.url, el.dataset.quality);
+            await switchQuality(el.dataset.url, el.dataset.quality);
             renderQualityButtons();
             updatePlayerMeta();
             break;
