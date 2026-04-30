@@ -13,6 +13,7 @@ const PLAYER_PREFS_STORAGE_KEY = 'streambox_player_preferences';
 const HOME_STORAGE_KEY = 'streambox_home_rows';
 const SEARCH_STORAGE_KEY = 'streambox_search_results';
 const SEARCH_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 7;
+const SERIES_EPISODES_REFRESH_MS = 1000 * 60 * 10;
 
 // =========================
 // CONTINUE WATCHING STORAGE
@@ -114,7 +115,8 @@ const DEFAULT_PLAYER_PREFS = {
     preferredSubtitleLanguage: 'off',
     preferredTranslatorId: null,
     preferredFitMode: 'contain',
-    subtitleLanguageBySource: {}
+    subtitleLanguageBySource: {},
+    sourcePreferences: {}
 };
 
 const QUALITY_FALLBACK_ORDER = [
@@ -136,7 +138,10 @@ function loadPlayerPrefs() {
             preferredSubtitleLanguage: parsed?.preferredSubtitleLanguage || DEFAULT_PLAYER_PREFS.preferredSubtitleLanguage,
             preferredTranslatorId: parsed?.preferredTranslatorId || DEFAULT_PLAYER_PREFS.preferredTranslatorId,
             preferredFitMode: parsed?.preferredFitMode || DEFAULT_PLAYER_PREFS.preferredFitMode,
-            autoplayNextEpisodeEnabled: parsed?.autoplayNextEpisodeEnabled ?? DEFAULT_PLAYER_PREFS.autoplayNextEpisodeEnabled
+            autoplayNextEpisodeEnabled: parsed?.autoplayNextEpisodeEnabled ?? DEFAULT_PLAYER_PREFS.autoplayNextEpisodeEnabled,
+            sourcePreferences: parsed?.sourcePreferences && typeof parsed.sourcePreferences === 'object'
+                ? parsed.sourcePreferences
+                : {}
         };
     } catch (e) {
         return {...DEFAULT_PLAYER_PREFS};
@@ -150,7 +155,8 @@ function savePlayerPrefs() {
             preferredSubtitleLanguage: playerPrefs.preferredSubtitleLanguage || 'off',
             preferredTranslatorId: playerPrefs.preferredTranslatorId || null,
             preferredFitMode: playerPrefs.preferredFitMode || 'contain',
-            autoplayNextEpisodeEnabled: !!playerPrefs.autoplayNextEpisodeEnabled
+            autoplayNextEpisodeEnabled: !!playerPrefs.autoplayNextEpisodeEnabled,
+            sourcePreferences: playerPrefs.sourcePreferences || {}
         }));
     } catch (e) {
     }
@@ -159,6 +165,47 @@ function savePlayerPrefs() {
 function updatePlayerPreference(key, value) {
     playerPrefs[key] = value;
     savePlayerPrefs();
+}
+
+function sourcePreferenceKey(sourceUrl) {
+    return String(sourceUrl || '').trim();
+}
+
+function getSourcePreferences(sourceUrl = currentSelectedItem?.sourceUrl) {
+    const key = sourcePreferenceKey(sourceUrl);
+    if (!key) return {};
+    return playerPrefs.sourcePreferences?.[key] || {};
+}
+
+function updateSourcePreferences(sourceUrl, patch) {
+    const key = sourcePreferenceKey(sourceUrl);
+    if (!key || !patch || typeof patch !== 'object') return;
+
+    const nextPreferences = {
+        ...(playerPrefs.sourcePreferences || {}),
+        [key]: {
+            ...(playerPrefs.sourcePreferences?.[key] || {}),
+            ...patch,
+            updatedAt: Date.now()
+        }
+    };
+
+    playerPrefs.sourcePreferences = nextPreferences;
+    savePlayerPrefs();
+}
+
+function getPreferredTranslatorForSource(sourceUrl = currentSelectedItem?.sourceUrl) {
+    const value = getSourcePreferences(sourceUrl).preferredTranslatorId;
+    return value ? String(value) : null;
+}
+
+function rememberTranslatorForCurrentSource(translatorId = currentTranslationId) {
+    if (!currentSelectedItem?.sourceUrl || !translatorId) return;
+
+    updateSourcePreferences(currentSelectedItem.sourceUrl, {
+        preferredTranslatorId: String(translatorId),
+        preferredTranslatorName: currentTranslatorName || null
+    });
 }
 
 function escapeHtml(value) {
@@ -269,7 +316,26 @@ function handleInputEnter(event, input, action) {
 
 function isBackKey(event) {
     const code = event.keyCode || event.which;
-    return code === 10009 || code === 8 || event.key === "Escape" || event.key === "Back";
+    return code === 10009 || code === 461 || event.key === "Escape" || event.key === "Back" || event.key === "BrowserBack";
+}
+
+function nextPlayerRequestToken() {
+    currentPlayerRequestToken += 1;
+    return currentPlayerRequestToken;
+}
+
+function isCurrentPlayerRequest(token, sourceUrl) {
+    return token === currentPlayerRequestToken && currentSelectedItem?.sourceUrl === sourceUrl;
+}
+
+function clearVideoPlaybackHandlers(video = document.getElementById('player-video')) {
+    if (!video) return;
+    video.onloadedmetadata = null;
+    video.onloadeddata = null;
+    video.oncanplay = null;
+    video.onseeked = null;
+    video.ontimeupdate = null;
+    video.onended = null;
 }
 
 async function fetchJson(endpoint, errorMessage, {params, init} = {}) {
@@ -321,6 +387,41 @@ function buildStreamUrl({url, translation, season, episode}) {
     }
     if (translation) params.set('translation', String(translation));
     return `${API_BASE}/stream?${params.toString()}`;
+}
+
+function isStreamRetryable(error) {
+    const message = String(error?.message || '').toLowerCase();
+    return message.includes('backend не ответил вовремя')
+        || message.includes('timeout')
+        || message.includes('timed out')
+        || message.includes('failed to fetch')
+        || message.includes('networkerror')
+        || message.includes('500')
+        || message.includes('502')
+        || message.includes('503')
+        || message.includes('504');
+}
+
+async function fetchStreamData(streamRequest, fallbackMessage) {
+    const streamUrl = buildStreamUrl(streamRequest);
+    let lastError = null;
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+            const res = await fetchWithTimeout(streamUrl, {}, STREAM_FETCH_TIMEOUT_MS);
+            if (!res.ok) {
+                const message = await responseErrorMessage(res, fallbackMessage);
+                throw new Error(`${message} (${res.status})`);
+            }
+            return await res.json();
+        } catch (error) {
+            lastError = error;
+            if (attempt > 0 || !isStreamRetryable(error)) break;
+            await sleep(900);
+        }
+    }
+
+    throw lastError || new Error(fallbackMessage);
 }
 
 function isSupportedQualityLabel(quality) {
@@ -431,7 +532,7 @@ function getPlayerLayoutStyles(viewportHeight = `${window.innerHeight}px`) {
 
 function continueEntryKey(entry) {
     if (!entry) return 'empty____';
-    return `${entry.sourceUrl || ''}__${entry.season || ''}__${entry.episode || ''}__${entry.translationId || ''}`;
+    return `${entry.sourceUrl || ''}__${entry.season || entry.savedSeason || ''}__${entry.episode || entry.savedEpisode || ''}`;
 }
 
 function continueDisplayKey(entry) {
@@ -689,6 +790,7 @@ let pendingPreplayResumeTime = 0;
 let isPreplaySeasonDropdownOpen = false;
 let isPreplayEpisodeDropdownOpen = false;
 let isTranslatorDropdownOpen = false;
+let preplayEpisodeConfirmed = false;
 let isPreplayOptionsLoading = false;
 let isPlayerOverlayVisible = true;
 let playerOverlayHideTimer = null;
@@ -699,6 +801,7 @@ let nextEpisodeCountdownValue = 5;
 let pendingNextEpisode = null;
 let autoplayHandledPlaybackKey = null;
 let currentDetailsRequestToken = 0;
+let currentPlayerRequestToken = 0;
 let ratingEnrichmentToken = 0;
 const BACKGROUND_RATING_ENRICH_ENABLED = false;
 const FOCUSED_CARD_PRELOAD_ENABLED = false;
@@ -983,8 +1086,13 @@ async function loadMovieTranslators(url) {
     return await fetchJson('/translators', 'Не удалось получить озвучки', {params: {url}});
 }
 
-async function loadEpisodesData(url) {
-    return await fetchJson('/episodes', 'Не удалось получить episodes', {params: {url}});
+async function loadEpisodesData(url, {refresh = false} = {}) {
+    return await fetchJson('/episodes', 'Не удалось получить episodes', {
+        params: {
+            url,
+            ...(refresh ? {refresh: '1', _: String(Date.now())} : {})
+        }
+    });
 }
 
 function cacheKey(url) {
@@ -1000,15 +1108,16 @@ function rememberCachedData(cache, key, data, maxSize = 80) {
         cache.delete(oldestKey);
     }
 
-    cache.set(key, {data});
+    cache.set(key, {data, savedAt: Date.now()});
 }
 
-async function loadCached(cache, url, loader) {
+async function loadCached(cache, url, loader, {maxAgeMs = null} = {}) {
     const key = cacheKey(url);
     if (!key) return await loader();
 
     const cached = cache.get(key);
-    if (cached?.data) return cached.data;
+    if (cached?.data && (!maxAgeMs || Date.now() - Number(cached.savedAt || 0) <= maxAgeMs)) return cached.data;
+    if (cached?.data) cache.delete(key);
     if (cached?.promise) return await cached.promise;
 
     const promise = loader()
@@ -1033,13 +1142,13 @@ async function loadMovieTranslatorsCached(url) {
     return await loadCached(movieTranslatorsCache, url, () => loadMovieTranslators(url));
 }
 
-async function loadEpisodesDataWithRetry(url, attempts = 3) {
+async function loadEpisodesDataWithRetry(url, attempts = 1, {refresh = false} = {}) {
     let lastData = null;
     let lastError = null;
 
     for (let attempt = 0; attempt < attempts; attempt += 1) {
         try {
-            const data = await loadEpisodesData(url);
+            const data = await loadEpisodesData(url, {refresh});
             lastData = data;
             if (getNormalizedEpisodesInfo(data).length) return data;
         } catch (error) {
@@ -1055,16 +1164,18 @@ async function loadEpisodesDataWithRetry(url, attempts = 3) {
     throw lastError || new Error('Не удалось получить episodes');
 }
 
-async function loadEpisodesDataWithRetryCached(url, attempts = 3, {force = false} = {}) {
+async function loadEpisodesDataWithRetryCached(url, attempts = 1, {force = false, refreshStale = false} = {}) {
     const key = cacheKey(url);
-    if (!key) return await loadEpisodesDataWithRetry(url, attempts);
+    if (!key) return await loadEpisodesDataWithRetry(url, attempts, {refresh: force || refreshStale});
     if (force) movieEpisodesCache.delete(key);
 
     const cached = movieEpisodesCache.get(key);
-    if (cached?.data) return cached.data;
+    const cachedAge = Date.now() - Number(cached?.savedAt || 0);
+    if (cached?.data && (!refreshStale || cachedAge <= SERIES_EPISODES_REFRESH_MS)) return cached.data;
     if (cached?.promise) return await cached.promise;
 
-    const promise = loadEpisodesDataWithRetry(url, attempts)
+    const staleData = cached?.data || null;
+    const promise = loadEpisodesDataWithRetry(url, attempts, {refresh: force || refreshStale})
         .then(data => {
             if (getNormalizedEpisodesInfo(data).length) {
                 rememberCachedData(movieEpisodesCache, key, data);
@@ -1075,6 +1186,10 @@ async function loadEpisodesDataWithRetryCached(url, attempts = 3, {force = false
         })
         .catch(error => {
             movieEpisodesCache.delete(key);
+            if (staleData) {
+                rememberCachedData(movieEpisodesCache, key, staleData);
+                return staleData;
+            }
             throw error;
         });
 
@@ -1162,8 +1277,16 @@ function applyTranslatorState(translatorId, {fallbackName = null, clearMissing =
     return true;
 }
 
+function resetCurrentTranslatorSelection() {
+    currentTranslationId = null;
+    currentTranslatorName = null;
+    currentTranslatorPremium = false;
+    currentStreams = {};
+    closeTranslatorDropdown();
+}
+
 function applyPreferredTranslatorIfAvailable() {
-    const preferredId = playerPrefs.preferredTranslatorId ? String(playerPrefs.preferredTranslatorId) : null;
+    const preferredId = getPreferredTranslatorForSource();
     if (!preferredId || !currentTranslators[preferredId]) return false;
     currentTranslationId = preferredId;
     return applyTranslatorState(preferredId);
@@ -1470,6 +1593,8 @@ function renderContinueWatching() {
         continueEntryKey(item),
         item.season || item.savedSeason || '',
         item.episode || item.savedEpisode || '',
+        getContinueTranslationId(item) || '',
+        getContinueTranslatorLabel(item) || '',
         item.currentTime || item.savedTime || 0,
         item.updatedAt || item.timestamp || item.syncedAt || 0
     ]));
@@ -1573,7 +1698,6 @@ function renderDetails(item, details = null) {
               <button class="action-btn secondary" data-focusable="true" data-type="back-home">← Back</button>
             </div>
             <div id="other-parts-panel" style="margin-top:24px;"></div>
-            <div id="series-panel" style="margin-top:24px;"></div>
           </div>
         </div>
       `;
@@ -1738,14 +1862,29 @@ function renderSeriesPanel(targetId = "series-panel") {
 }
 
 function renderSeriesPanels() {
-    renderSeriesPanel();
     renderSeriesPanel("player-series-panel");
 }
 
 function renderTranslatorButtons() {
     const container = document.getElementById("translator-buttons");
     const label = document.getElementById('translator-select-label');
+    const trigger = document.getElementById('translator-select-trigger');
     if (!container) return;
+
+    const shouldHideForSeries = isSeriesItem(currentSelectedItem) &&
+        (!currentSelectedSeason || !currentSelectedEpisode || !preplayEpisodeConfirmed);
+
+    if (trigger) {
+        trigger.style.display = shouldHideForSeries ? 'none' : '';
+    }
+
+    if (shouldHideForSeries) {
+        closeTranslatorDropdown();
+        container.innerHTML = "";
+        if (label) label.textContent = 'Choose season and episode first';
+        scheduleRefreshFocusables(50);
+        return;
+    }
 
     const entries = getAvailableTranslatorsForCurrentEpisode();
     container.style.display = currentSelectedItem && entries.length && isTranslatorDropdownOpen ? "block" : "none";
@@ -1807,6 +1946,8 @@ function renderTranslatorButtons() {
 async function switchTranslator(translationId) {
     if (!currentSelectedItem?.sourceUrl) return;
 
+    const playerRequestToken = nextPlayerRequestToken();
+    const requestSourceUrl = currentSelectedItem.sourceUrl;
     currentTranslationId = translationId;
     applyTranslatorState(translationId, {fallbackName: `Translator ${translationId}`, clearMissing: true});
     ensureFitModeButton();
@@ -1827,18 +1968,18 @@ async function switchTranslator(translationId) {
     if (desc) desc.textContent = 'Меняем озвучку...';
 
     try {
-        const res = await fetchWithTimeout(buildStreamUrl({
-            url: currentSelectedItem.sourceUrl,
+        const streamData = await fetchStreamData({
+            url: requestSourceUrl,
             translation: translationId,
             season: currentSelectedSeason,
             episode: currentSelectedEpisode
-        }), {}, STREAM_FETCH_TIMEOUT_MS);
-        if (!res.ok) {
-            throw new Error(await responseErrorMessage(res, 'Не удалось получить stream для выбранной озвучки'));
-        }
-
-        const streamData = await res.json();
+        }, 'Не удалось получить stream для выбранной озвучки');
+        if (!isCurrentPlayerRequest(playerRequestToken, requestSourceUrl)) return;
         currentStreams = streamData;
+        if (streamData.translator_id) {
+            currentTranslationId = String(streamData.translator_id);
+            applyTranslatorState(currentTranslationId, {fallbackName: `Translator ${currentTranslationId}`, clearMissing: true});
+        }
 
         const selectedStream = pickStreamByQuality(streamData, preferredQuality);
         const streamUrl = selectedStream.url;
@@ -1853,6 +1994,10 @@ async function switchTranslator(translationId) {
             return;
         }
 
+        rememberTranslatorForCurrentSource(currentTranslationId);
+
+        if (!isCurrentPlayerRequest(playerRequestToken, requestSourceUrl)) return;
+        clearVideoPlaybackHandlers(video);
         video.src = streamUrl;
         video.load();
 
@@ -2724,28 +2869,33 @@ function findContinueEntryForCurrentItem() {
 
     const items = mergeContinueSourcesExact(loadContinueWatching(), remoteContinueItems);
     const isSeries = !!(currentSelectedSeason && currentSelectedEpisode);
+    const sortContinueEntries = (entries) => entries.sort((a, b) => {
+        const updatedDiff = Number(b.updatedAt || b.timestamp || b.syncedAt || 0) - Number(a.updatedAt || a.timestamp || a.syncedAt || 0);
+        if (updatedDiff !== 0) return updatedDiff;
+        return Number(b.currentTime || b.savedTime || 0) - Number(a.currentTime || a.savedTime || 0);
+    });
 
     if (isSeries) {
-        return items.find(item =>
+        return sortContinueEntries(items.filter(item =>
             item.sourceUrl === currentSelectedItem.sourceUrl &&
             String(item.season || '') === String(currentSelectedSeason || '') &&
             String(item.episode || '') === String(currentSelectedEpisode || '')
-        ) || null;
+        ))[0] || null;
     }
 
-    const seriesFallback = items.find(item =>
+    const seriesFallback = sortContinueEntries(items.filter(item =>
         item.sourceUrl === currentSelectedItem.sourceUrl &&
         item.season &&
         item.episode
-    ) || null;
+    ))[0] || null;
 
     if (seriesFallback) return seriesFallback;
 
-    return items.find(item =>
+    return sortContinueEntries(items.filter(item =>
         item.sourceUrl === currentSelectedItem.sourceUrl &&
         !item.season &&
         !item.episode
-    ) || null;
+    ))[0] || null;
 }
 
 // =========================
@@ -2904,6 +3054,10 @@ function getAvailableTranslatorsForCurrentEpisode() {
         return Object.entries(currentTranslators || {}).filter(([, data]) => !!data);
     }
 
+    if (!currentSelectedSeason || !currentSelectedEpisode || !preplayEpisodeConfirmed && currentScreen === 'details') {
+        return [];
+    }
+
     const season = String(currentSelectedSeason || '');
     const episode = String(currentSelectedEpisode || '');
     const normalized = getNormalizedEpisodesInfo();
@@ -2928,6 +3082,7 @@ function ensureTranslatorAvailableForCurrentEpisode() {
     const availableEntries = getAvailableTranslatorsForCurrentEpisode();
 
     if (!availableEntries.length) {
+        resetCurrentTranslatorSelection();
         return false;
     }
 
@@ -2975,7 +3130,10 @@ function updatePreplaySummary({loadingText = null} = {}) {
     const isSeries = isSeriesItem(currentSelectedItem);
     const seasonText = currentSelectedSeason || '—';
     const episodeText = currentSelectedEpisode || '—';
-    const translatorText = currentTranslatorName || 'Choose voice acting';
+    const needsEpisodeChoice = isSeries && (!currentSelectedSeason || !currentSelectedEpisode || !preplayEpisodeConfirmed);
+    const translatorText = needsEpisodeChoice
+        ? 'Choose season and episode first'
+        : currentTranslatorName || 'Choose voice acting';
     const qualityText = currentQuality || playerPrefs.preferredQuality || 'Auto';
 
     selection.textContent = isSeries
@@ -3009,9 +3167,9 @@ function renderPreplaySeriesOptions() {
         return;
     }
 
-    const activeSeason = String(currentSelectedSeason || normalized[0]?.season || '');
+    const activeSeason = String(currentSelectedSeason || '');
     const seasonBlock = normalized.find(block => String(block.season) === activeSeason) || normalized[0];
-    const episodes = seasonBlock?.episodes || [];
+    const episodes = currentSelectedSeason ? (seasonBlock?.episodes || []) : [];
 
     const seasonsHtml = `
       <div style="position:relative;">
@@ -3022,7 +3180,7 @@ function renderPreplaySeriesOptions() {
           data-type="preplay-season-toggle"
           style="width:100%; justify-content:space-between; text-align:left; min-height:74px; padding:0 22px; border-radius:18px; font-size:24px; background:rgba(255,255,255,0.10);"
         >
-          <span>Сезон ${escapeHtml(activeSeason || '—')}</span>
+          <span>${activeSeason ? `Сезон ${escapeHtml(activeSeason)}` : 'Выбрать сезон'}</span>
           <span style="font-size:28px; opacity:0.9;">▾</span>
         </button>
         <div
@@ -3055,14 +3213,14 @@ function renderPreplaySeriesOptions() {
           data-type="preplay-episode-toggle"
           style="width:100%; justify-content:space-between; text-align:left; min-height:74px; padding:0 22px; border-radius:18px; font-size:24px; background:rgba(255,255,255,0.10);"
         >
-          <span>Серия ${escapeHtml(currentSelectedEpisode || episodes[0]?.episode || '—')}</span>
+          <span>${currentSelectedEpisode ? `Серия ${escapeHtml(currentSelectedEpisode)}` : 'Выбрать серию'}</span>
           <span style="font-size:28px; opacity:0.9;">▾</span>
         </button>
         <div
           id="preplay-episode-options"
           style="display:${isPreplayEpisodeDropdownOpen ? 'grid' : 'none'}; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:8px; margin-top:12px; padding:12px; border:1px solid rgba(255,255,255,0.10); border-radius:18px; background:rgba(8,10,16,0.78); box-shadow:0 16px 36px rgba(0,0,0,0.24);"
         >
-          ${episodes.map(ep => {
+          ${episodes.length ? episodes.map(ep => {
               const episode = String(ep.episode);
               const isActive = episode === String(currentSelectedEpisode);
               return `
@@ -3075,7 +3233,7 @@ function renderPreplaySeriesOptions() {
                   style="min-height:58px; padding:0 16px; border-radius:14px; font-size:22px; justify-content:center;"
                 >Серия ${escapeHtml(episode)}</button>
               `;
-          }).join('')}
+          }).join('') : '<div class="empty-box" style="padding:14px; font-size:20px;">Сначала выберите сезон.</div>'}
         </div>
       </div>
     `;
@@ -3083,7 +3241,7 @@ function renderPreplaySeriesOptions() {
     target.innerHTML = `${seasonsHtml}${episodesHtml}`;
 }
 
-async function ensurePreplayOptionsLoaded() {
+async function ensurePreplayOptionsLoaded({focusFirst = true} = {}) {
     if (!currentSelectedItem?.sourceUrl) return false;
 
     isPreplayOptionsLoading = true;
@@ -3091,25 +3249,26 @@ async function ensurePreplayOptionsLoaded() {
     renderPreplaySeriesOptions();
 
     try {
-        if (!Object.keys(currentTranslators || {}).length) {
-            const translatorsData = await loadMovieTranslatorsCached(currentSelectedItem.sourceUrl);
-            currentTranslators = translatorsData.translators || {};
-        }
-
-        if (isSeriesItem(currentSelectedItem) && !getNormalizedEpisodesInfo().length) {
-            currentEpisodesData = await loadEpisodesDataWithRetryCached(currentSelectedItem.sourceUrl);
-        }
-
         if (isSeriesItem(currentSelectedItem)) {
-            ensureSeriesSelection();
-        } else {
+            currentEpisodesData = await loadEpisodesDataWithRetryCached(currentSelectedItem.sourceUrl);
+            if (currentEpisodesData?.translators && typeof currentEpisodesData.translators === 'object') {
+                currentTranslators = currentEpisodesData.translators;
+            }
+        }
+
+        if (!isSeriesItem(currentSelectedItem)) {
             currentSelectedSeason = null;
             currentSelectedEpisode = null;
+            preplayEpisodeConfirmed = false;
         }
 
-        if (!applyTranslatorState(currentTranslationId) && !applyPreferredTranslatorIfAvailable()) {
-            ensureTranslatorAvailableForCurrentEpisode();
-        } else {
+        if (!isSeriesItem(currentSelectedItem) || preplayEpisodeConfirmed) {
+            if (!Object.keys(currentTranslators || {}).length) {
+                const translatorsData = await loadMovieTranslatorsCached(currentSelectedItem.sourceUrl);
+                currentTranslators = translatorsData.translators || {};
+            }
+
+            applyPreferredTranslatorIfAvailable();
             ensureTranslatorAvailableForCurrentEpisode();
         }
 
@@ -3118,7 +3277,7 @@ async function ensurePreplayOptionsLoaded() {
         renderTranslatorButtons();
         updatePreplaySummary();
         scheduleRefreshFocusables();
-        focusPreplayFirstChoice();
+        if (focusFirst) focusPreplayFirstChoice();
         return true;
     } catch (error) {
         isPreplayOptionsLoading = false;
@@ -3302,10 +3461,12 @@ function updatePlayerSeriesControls(isSeriesType) {
 
 function closePlayerToDetails() {
     const video = document.getElementById('player-video');
+    nextPlayerRequestToken();
     clearNextEpisodeOverlay();
     persistCurrentPlaybackProgress();
 
     if (video) {
+        clearVideoPlaybackHandlers(video);
         video.pause();
         video.removeAttribute('src');
         video.load();
@@ -3431,6 +3592,9 @@ async function openDetailsForItem(item, options = {}) {
     const savedEntry = mergeContinueSourcesExact(loadContinueWatching(), remoteContinueItems)
         .filter(entry => entry.sourceUrl === item.sourceUrl)
         .sort((a, b) => {
+            const updatedDiff = Number(b.updatedAt || b.timestamp || b.syncedAt || 0) - Number(a.updatedAt || a.timestamp || a.syncedAt || 0);
+            if (updatedDiff !== 0) return updatedDiff;
+
             const seasonDiff = Number(b.season || b.savedSeason || 0) - Number(a.season || a.savedSeason || 0);
             if (seasonDiff !== 0) return seasonDiff;
 
@@ -3441,21 +3605,27 @@ async function openDetailsForItem(item, options = {}) {
         })[0] || null;
 
     if (!options.preservePlaybackState && savedEntry) {
-        currentSelectedSeason = savedEntry.savedSeason || savedEntry.season || currentSelectedSeason || null;
-        currentSelectedEpisode = savedEntry.savedEpisode || savedEntry.episode || currentSelectedEpisode || null;
-        currentTranslationId = savedEntry.savedTranslationId || savedEntry.translationId || currentTranslationId || null;
-        currentTranslatorName = savedEntry.savedTranslatorName || savedEntry.translatorName || currentTranslatorName || null;
-        currentQuality = savedEntry.savedQuality || savedEntry.quality || currentQuality || null;
-        pendingPreplayResumeTime = Number(savedEntry.savedTime || savedEntry.currentTime || 0) || 0;
+            currentSelectedSeason = savedEntry.savedSeason || savedEntry.season || currentSelectedSeason || null;
+            currentSelectedEpisode = savedEntry.savedEpisode || savedEntry.episode || currentSelectedEpisode || null;
+            currentTranslationId = getPreferredTranslatorForSource(item.sourceUrl) || savedEntry.savedTranslationId || savedEntry.translationId || currentTranslationId || null;
+            currentTranslatorName = savedEntry.savedTranslatorName || savedEntry.translatorName || currentTranslatorName || null;
+            currentQuality = savedEntry.savedQuality || savedEntry.quality || currentQuality || null;
+            pendingPreplayResumeTime = Number(savedEntry.savedTime || savedEntry.currentTime || 0) || 0;
     }
 
     if (isDifferentItem) {
+        nextPlayerRequestToken();
+        clearVideoPlaybackHandlers();
+        currentStreams = {};
+        pendingResumeTime = 0;
+        pendingPreplayResumeTime = Number(savedEntry?.savedTime || savedEntry?.currentTime || 0) || 0;
+        preplayEpisodeConfirmed = !!(options.preservePlaybackState && (savedEntry?.savedSeason || savedEntry?.season) && (savedEntry?.savedEpisode || savedEntry?.episode));
         currentEpisodesData = null;
         currentTranslators = {};
         if (!options.preservePlaybackState) {
             currentSelectedSeason = savedEntry?.savedSeason || savedEntry?.season || null;
             currentSelectedEpisode = savedEntry?.savedEpisode || savedEntry?.episode || null;
-            currentTranslationId = savedEntry?.savedTranslationId || savedEntry?.translationId || null;
+            currentTranslationId = getPreferredTranslatorForSource(item.sourceUrl) || savedEntry?.savedTranslationId || savedEntry?.translationId || null;
             currentTranslatorName = savedEntry?.savedTranslatorName || savedEntry?.translatorName || null;
             currentTranslatorPremium = false;
             resetSubtitleState();
@@ -3501,6 +3671,8 @@ async function openPlayerForSelected(initialTime = 0) {
     autoplayHandledPlaybackKey = null;
     if (!currentSelectedItem?.sourceUrl) return;
 
+    const playerRequestToken = nextPlayerRequestToken();
+    const requestSourceUrl = currentSelectedItem.sourceUrl;
     const continueEntry = findContinueEntryForCurrentItem();
     const effectiveInitialTime = Number(initialTime || pendingPreplayResumeTime || continueEntry?.currentTime || continueEntry?.savedTime || 0);
     pendingResumeTime = effectiveInitialTime > 0 ? effectiveInitialTime : 0;
@@ -3532,12 +3704,21 @@ async function openPlayerForSelected(initialTime = 0) {
             currentQuality = continueEntry.quality || continueEntry.savedQuality;
         }
     }
+
+    if (!currentTranslationId) {
+        currentTranslationId = getPreferredTranslatorForSource(requestSourceUrl);
+    }
+
     const isSeriesType = isSeriesItem(currentSelectedItem);
 
     if (isSeriesType && !getNormalizedEpisodesInfo().length) {
         try {
             const episodesData = await loadEpisodesDataWithRetryCached(currentSelectedItem.sourceUrl);
+            if (!isCurrentPlayerRequest(playerRequestToken, requestSourceUrl)) return;
             currentEpisodesData = episodesData;
+            if (episodesData?.translators && typeof episodesData.translators === 'object') {
+                currentTranslators = episodesData.translators;
+            }
 
             renderSeriesPanels();
         } catch (e) {
@@ -3573,6 +3754,7 @@ async function openPlayerForSelected(initialTime = 0) {
     const desc = document.getElementById('player-desc');
     const video = document.getElementById('player-video');
     if (!title || !desc || !video) return;
+    if (!isCurrentPlayerRequest(playerRequestToken, requestSourceUrl)) return;
 
     currentVideoFitMode = playerPrefs.preferredFitMode || 'contain';
     ensureFitModeButton();
@@ -3581,6 +3763,7 @@ async function openPlayerForSelected(initialTime = 0) {
     try {
         if (!Object.keys(currentTranslators || {}).length) {
             const translatorsData = await loadMovieTranslatorsCached(currentSelectedItem.sourceUrl);
+            if (!isCurrentPlayerRequest(playerRequestToken, requestSourceUrl)) return;
             currentTranslators = translatorsData.translators || {};
         }
 
@@ -3601,6 +3784,7 @@ async function openPlayerForSelected(initialTime = 0) {
         updatePlayerSeriesControls(isSeriesType);
         ensurePlayerOverlayControlLayout();
     } catch (e) {
+        if (!isCurrentPlayerRequest(playerRequestToken, requestSourceUrl)) return;
         if (desc) desc.textContent = `Ошибка смены озвучки: ${e.message}`;
     }
     title.textContent = currentSelectedItem.title || 'Player';
@@ -3619,16 +3803,14 @@ async function openPlayerForSelected(initialTime = 0) {
     }, 20);
     try {
         const preferredQuality = currentQuality;
-        const res = await fetchWithTimeout(buildStreamUrl({
-            url: currentSelectedItem.sourceUrl,
+        const streamRequest = {
+            url: requestSourceUrl,
             translation: currentTranslationId,
             season: currentSelectedSeason,
             episode: currentSelectedEpisode
-        }), {}, STREAM_FETCH_TIMEOUT_MS);
-        if (!res.ok) {
-            throw new Error(await responseErrorMessage(res, 'Не удалось получить stream'));
-        }
-        const streamData = await res.json();
+        };
+        const streamData = await fetchStreamData(streamRequest, 'Не удалось получить stream');
+        if (!isCurrentPlayerRequest(playerRequestToken, requestSourceUrl)) return;
         currentStreams = streamData;
         if (streamData.translator_id) {
             currentTranslationId = String(streamData.translator_id);
@@ -3657,7 +3839,7 @@ async function openPlayerForSelected(initialTime = 0) {
         renderSeriesPanel("player-series-panel");
         updatePlayerProgressUI(video);
 
-        const playbackKey = `${currentSelectedItem.sourceUrl}__${currentSelectedSeason || ''}__${currentSelectedEpisode || ''}__${Date.now()}`;
+        const playbackKey = `${requestSourceUrl}__${streamRequest.season || ''}__${streamRequest.episode || ''}__${Date.now()}`;
         video.dataset.playbackKey = playbackKey;
 
         video.dataset.resumeTarget = resumeTargetSeconds > 0 ? String(resumeTargetSeconds) : '';
@@ -3707,6 +3889,8 @@ async function openPlayerForSelected(initialTime = 0) {
             }
         };
 
+        if (!isCurrentPlayerRequest(playerRequestToken, requestSourceUrl)) return;
+        clearVideoPlaybackHandlers(video);
         video.src = streamUrl;
         video.load();
 
@@ -3797,6 +3981,7 @@ async function openPlayerForSelected(initialTime = 0) {
         }, 1500);
 
     } catch (err) {
+        if (!isCurrentPlayerRequest(playerRequestToken, requestSourceUrl)) return;
         desc.textContent = currentTranslatorPremium
             ? `Не удалось загрузить premium-озвучку: ${err.message}`
             : `Ошибка загрузки stream: ${err.message}`;
@@ -3947,6 +4132,11 @@ function openTranslatorDropdown() {
 }
 
 function toggleTranslatorDropdown() {
+    if (isSeriesItem(currentSelectedItem) && (!currentSelectedSeason || !currentSelectedEpisode || !preplayEpisodeConfirmed)) {
+        updatePreplaySummary({loadingText: 'Choose season and episode first'});
+        return;
+    }
+
     if (isTranslatorDropdownOpen) {
         closeTranslatorDropdown();
         focusPreplayStartButton();
@@ -3965,6 +4155,11 @@ function togglePreplaySeasonDropdown() {
 }
 
 function togglePreplayEpisodeDropdown() {
+    if (!currentSelectedSeason) {
+        updatePreplaySummary({loadingText: 'Choose season first'});
+        return;
+    }
+
     isPreplayEpisodeDropdownOpen = !isPreplayEpisodeDropdownOpen;
     isPreplaySeasonDropdownOpen = false;
     closeTranslatorDropdown();
@@ -4483,14 +4678,17 @@ async function activateFocused() {
         }
         case 'season-select':
             currentSelectedSeason = el.dataset.season;
-            selectFirstEpisodeForSeason(currentSelectedSeason);
-            ensureTranslatorAvailableForCurrentEpisode();
+            resetCurrentTranslatorSelection();
             if (document.getElementById('preplay-modal')?.style.display === 'flex') {
+                currentSelectedEpisode = null;
+                preplayEpisodeConfirmed = false;
                 closePreplaySeriesDropdowns();
                 renderPreplaySeriesOptions();
                 renderTranslatorButtons();
                 updatePreplaySummary();
             } else {
+                selectFirstEpisodeForSeason(currentSelectedSeason);
+                ensureTranslatorAvailableForCurrentEpisode();
                 renderSeriesPanels();
             }
             scheduleRefreshFocusables();
@@ -4498,15 +4696,24 @@ async function activateFocused() {
         case 'episode-select':
             currentSelectedSeason = el.dataset.season;
             currentSelectedEpisode = el.dataset.episode;
-            ensureTranslatorAvailableForCurrentEpisode();
+            resetCurrentTranslatorSelection();
 
             if (document.getElementById('preplay-modal')?.style.display === 'flex') {
+                preplayEpisodeConfirmed = true;
                 closePreplaySeriesDropdowns();
                 renderPreplaySeriesOptions();
-                renderTranslatorButtons();
-                updatePreplaySummary();
+                await ensurePreplayOptionsLoaded({focusFirst: false});
+                setTimeout(() => {
+                    const translatorToggle = document.querySelector('#preplay-modal [data-type="preplay-translator-toggle"]');
+                    if (translatorToggle && translatorToggle.offsetParent !== null) {
+                        refreshFocusables();
+                        setFocusedElement(translatorToggle, {selector: '#preplay-modal [data-focusable="true"]', focus: true});
+                    }
+                }, 80);
                 scheduleRefreshFocusables();
             } else if (currentScreen === 'details') {
+                preplayEpisodeConfirmed = true;
+                ensureTranslatorAvailableForCurrentEpisode();
                 const entry = findContinueEntryForCurrentItem();
                 const resumeTime = Number(entry?.currentTime || entry?.savedTime || 0);
                 pendingPreplayResumeTime = resumeTime > 0 ? resumeTime : 0;
@@ -4549,14 +4756,14 @@ async function activateFocused() {
             break;
         case 'preplay-start': {
             if (isPreplayOptionsLoading) break;
+            if (isSeriesItem(currentSelectedItem) && (!currentSelectedSeason || !currentSelectedEpisode || !preplayEpisodeConfirmed)) {
+                updatePreplaySummary({loadingText: 'Choose season and episode first'});
+                break;
+            }
+
             if (!Object.keys(currentTranslators || {}).length || (isSeriesItem(currentSelectedItem) && !getNormalizedEpisodesInfo().length)) {
                 const loaded = await ensurePreplayOptionsLoaded();
                 if (!loaded) break;
-            }
-
-            if (isSeriesItem(currentSelectedItem) && (!currentSelectedSeason || !currentSelectedEpisode)) {
-                updatePreplaySummary({loadingText: 'Choose season and episode first'});
-                break;
             }
 
             const hasTranslator = ensureTranslatorAvailableForCurrentEpisode();
@@ -4642,7 +4849,7 @@ async function activateFocused() {
                     fallbackName: `Translator ${currentTranslationId}`,
                     clearMissing: true
                 });
-                updatePlayerPreference('preferredTranslatorId', String(currentTranslationId));
+                rememberTranslatorForCurrentSource(currentTranslationId);
                 closeTranslatorDropdown();
                 renderPreplaySeriesOptions();
                 renderTranslatorButtons();
