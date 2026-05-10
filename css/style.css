@@ -435,3 +435,362 @@ video {
 #player-ui-overlay {
     z-index: 2000;
 }
+
+/* TV comfort pass: larger touch targets, readable text from sofa distance. */
+:root {
+    --radius: 24px;
+    --sidebar-w: 280px;
+}
+
+html, body {
+    font-size: 20px;
+}
+
+.sidebar {
+    padding: 36px 24px;
+    gap: 20px;
+}
+
+.brand {
+    font-size: 38px;
+    margin-bottom: 28px;
+    line-height: 1.05;
+}
+
+.nav-btn {
+    min-height: 72px;
+    border-radius: 22px;
+    padding: 20px 22px;
+    font-size: 27px;
+    font-weight: 750;
+}
+
+.focus {
+    box-shadow: 0 0 0 6px var(--focus), 0 18px 46px rgba(87, 166, 255, 0.42);
+    transform: scale(1.065);
+}
+
+#screen-continue .poster-card.focus {
+    box-shadow: inset 0 0 0 6px var(--focus), 0 12px 34px rgba(87, 166, 255, 0.26);
+}
+
+.content {
+    padding: 42px 46px 0;
+}
+
+.home-layout {
+    padding-top: 42px;
+}
+
+.home-section-header {
+    margin-bottom: 20px;
+    padding: 0 8px;
+}
+
+.home-section-header .eyebrow,
+.eyebrow {
+    font-size: 22px;
+}
+
+.home-section-header .hint,
+.hint {
+    font-size: 20px;
+}
+
+.row-title {
+    font-size: 38px;
+    line-height: 1.12;
+}
+
+.row-subtitle {
+    font-size: 22px;
+}
+
+.poster-row {
+    gap: 26px;
+    padding: 14px 8px 32px;
+}
+
+.poster-card,
+.search-result {
+    flex-basis: 280px;
+    width: 280px;
+    border-radius: 26px;
+    padding: 16px;
+}
+
+.poster-thumb,
+.search-result .poster-thumb {
+    height: 390px;
+    border-radius: 20px;
+    margin-bottom: 16px;
+}
+
+.card-title {
+    font-size: 25px;
+    min-height: 62px;
+    line-height: 1.22;
+    margin-bottom: 8px;
+}
+
+.card-meta {
+    font-size: 20px;
+    line-height: 1.28;
+}
+
+.search-wrap,
+.login-wrap,
+.details-wrap,
+.player-wrap {
+    padding: 52px 54px;
+}
+
+.screen-title {
+    font-size: 58px;
+    line-height: 1.06;
+    margin-bottom: 14px;
+}
+
+.screen-desc {
+    font-size: 28px;
+    line-height: 1.42;
+    margin-bottom: 32px;
+}
+
+.search-bar {
+    gap: 22px;
+    margin-bottom: 34px;
+}
+
+.search-input,
+.field-input {
+    min-height: 78px;
+    border-radius: 22px;
+    padding: 22px 26px;
+    font-size: 30px;
+}
+
+.action-btn,
+.icon-btn {
+    min-height: 72px;
+    border-radius: 22px;
+    padding: 20px 30px;
+    font-size: 26px;
+    line-height: 1.1;
+}
+
+.btn-row {
+    gap: 20px;
+}
+
+.results-grid {
+    grid-template-columns: repeat(auto-fill, 280px);
+    gap: 26px;
+}
+
+.login-card {
+    width: 760px;
+    border-radius: 34px;
+    padding: 44px;
+}
+
+.field-label {
+    font-size: 24px;
+    margin: 22px 0 12px;
+}
+
+.details-layout {
+    grid-template-columns: 460px 1fr;
+    gap: 44px;
+}
+
+.details-poster {
+    height: 660px;
+    border-radius: 34px;
+}
+
+.tag-row {
+    gap: 14px;
+    margin: 18px 0 28px;
+}
+
+.tag {
+    padding: 14px 20px;
+    font-size: 21px;
+}
+
+.empty-box {
+    border-radius: 26px;
+    padding: 32px;
+    font-size: 24px;
+}
+
+#screen-details [data-details-title] {
+    font-size: 68px !important;
+    line-height: 1.04 !important;
+    margin-bottom: 18px !important;
+}
+
+#screen-details [data-details-description] {
+    max-width: 980px !important;
+    font-size: 29px !important;
+    line-height: 1.48 !important;
+}
+
+#other-parts-panel .row-title,
+#player-series-panel .row-title {
+    font-size: 34px !important;
+}
+
+#preplay-modal {
+    padding: 42px !important;
+}
+
+#preplay-modal > div {
+    width: min(1120px, 94vw) !important;
+    border-radius: 38px !important;
+    padding: 48px !important;
+}
+
+#preplay-title {
+    font-size: 68px !important;
+}
+
+#preplay-desc {
+    max-width: 920px !important;
+    font-size: 29px !important;
+}
+
+#preplay-selection {
+    font-size: 38px !important;
+}
+
+#preplay-modal .action-btn,
+#translator-select-trigger {
+    min-height: 92px !important;
+    border-radius: 24px !important;
+    font-size: 30px !important;
+}
+
+#translator-buttons .action-btn,
+#preplay-series-options .action-btn {
+    min-height: 74px !important;
+    font-size: 28px !important;
+}
+
+#screen-player #player-title {
+    font-size: 68px !important;
+}
+
+#screen-player #player-desc {
+    font-size: 30px !important;
+}
+
+#screen-player .action-btn {
+    min-height: 78px;
+    min-width: 112px;
+    font-size: 28px;
+}
+
+#player-current-time,
+#player-total-time {
+    font-size: 24px;
+}
+
+#player-seekbar {
+    min-height: 46px !important;
+}
+
+#player-seekbar-fill {
+    min-height: 14px;
+}
+
+#player-seekbar-hint {
+    font-size: 19px !important;
+}
+
+@media (max-width: 1500px) {
+    :root {
+        --sidebar-w: 250px;
+    }
+
+    .poster-card,
+    .search-result {
+        flex-basis: 250px;
+        width: 250px;
+    }
+
+    .poster-thumb,
+    .search-result .poster-thumb {
+        height: 350px;
+    }
+
+    .results-grid {
+        grid-template-columns: repeat(auto-fill, 250px);
+    }
+
+    .details-layout {
+        grid-template-columns: 390px 1fr;
+    }
+
+    .details-poster {
+        height: 570px;
+    }
+}
+
+/* TV performance pass: cheap focus drawing for slower Tizen GPUs. */
+[data-focusable="true"]:focus,
+button:focus,
+input:focus {
+    outline: none !important;
+}
+
+.nav-btn,
+.action-btn,
+.poster-card,
+.search-result,
+.icon-btn {
+    transition: background-color 80ms linear, border-color 80ms linear, outline-color 80ms linear;
+}
+
+.focus {
+    outline: 5px solid var(--focus);
+    outline-offset: -5px;
+    box-shadow: none;
+    transform: none;
+    background-color: rgba(87, 166, 255, 0.16);
+    z-index: 10;
+    position: relative;
+}
+
+.poster-card.focus,
+.search-result.focus {
+    outline-width: 6px;
+    outline-offset: -6px;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+}
+
+#screen-continue .poster-card.focus {
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+    transform: none;
+}
+
+#screen-home .poster-row {
+    padding-left: 18px;
+    scroll-padding-left: 18px;
+}
+
+#screen-player #player-stage {
+    overflow: hidden !important;
+}
+
+.screen-desc,
+.card-meta,
+.hint {
+    color: #c2ccdc;
+}
+
+#preplay-modal,
+#player-ui-overlay {
+    backdrop-filter: none !important;
+}

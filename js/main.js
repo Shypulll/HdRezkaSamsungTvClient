@@ -6,6 +6,9 @@
 
 const API_BASE = 'http://10.0.0.190:5000';
 const API_FETCH_TIMEOUT_MS = 18000;
+const DETAILS_FETCH_TIMEOUT_MS = 24000;
+const TRANSLATORS_FETCH_TIMEOUT_MS = 26000;
+const EPISODES_FETCH_TIMEOUT_MS = 45000;
 const STREAM_FETCH_TIMEOUT_MS = 30000;
 
 const CONTINUE_STORAGE_KEY = 'streambox_continue_watching';
@@ -14,6 +17,7 @@ const HOME_STORAGE_KEY = 'streambox_home_rows';
 const SEARCH_STORAGE_KEY = 'streambox_search_results';
 const SEARCH_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const SERIES_EPISODES_REFRESH_MS = 1000 * 60 * 10;
+const NAVIGATION_THROTTLE_MS = 55;
 
 // =========================
 // CONTINUE WATCHING STORAGE
@@ -258,8 +262,20 @@ function clearElementStyles(el, styles) {
     });
 }
 
-function clearFocusedState() {
-    document.querySelectorAll('.focus').forEach(node => node.classList.remove('focus'));
+let currentFocusedElement = null;
+let refreshFocusablesTimer = null;
+let lastNavigationAt = 0;
+
+function clearFocusedState({forceScan = false} = {}) {
+    if (currentFocusedElement?.classList?.contains('focus')) {
+        currentFocusedElement.classList.remove('focus');
+    }
+
+    if (forceScan || !currentFocusedElement) {
+        document.querySelectorAll('.focus').forEach(node => node.classList.remove('focus'));
+    }
+
+    currentFocusedElement = null;
 }
 
 function getVisibleFocusables(selector) {
@@ -274,7 +290,10 @@ function applyFocusedIndex(nextIndex, {focus = false, ensureVisible = true} = {}
     clearFocusedState();
     focusIndex = nextIndex;
     active.classList.add('focus');
-    if (focus) active.focus?.();
+    currentFocusedElement = active;
+    if (focus && ['INPUT', 'TEXTAREA'].includes(active.tagName)) {
+        active.focus?.({preventScroll: true});
+    }
     if (ensureVisible) ensureFocusedElementVisible(active);
     syncPlayerToggleFocusStyle();
     updatePlayerProgressUI();
@@ -300,7 +319,11 @@ function focusFirstScreenFocusable(screen) {
 }
 
 function scheduleRefreshFocusables(delay = 20) {
-    setTimeout(refreshFocusables, delay);
+    if (refreshFocusablesTimer) clearTimeout(refreshFocusablesTimer);
+    refreshFocusablesTimer = setTimeout(() => {
+        refreshFocusablesTimer = null;
+        refreshFocusables();
+    }, delay);
 }
 
 function handleInputEnter(event, input, action) {
@@ -317,6 +340,22 @@ function handleInputEnter(event, input, action) {
 function isBackKey(event) {
     const code = event.keyCode || event.which;
     return code === 10009 || code === 461 || event.key === "Escape" || event.key === "Back" || event.key === "BrowserBack";
+}
+
+function isTizenRuntime() {
+    return typeof window !== 'undefined'
+        && (
+            !!window.tizen
+            || !!window.webapis
+            || /tizen|smart-tv|smarttv|samsungbrowser/i.test(navigator.userAgent || '')
+        );
+}
+
+function canProcessNavigationKey() {
+    const now = window.performance?.now ? window.performance.now() : Date.now();
+    if (now - lastNavigationAt < NAVIGATION_THROTTLE_MS) return false;
+    lastNavigationAt = now;
+    return true;
 }
 
 function nextPlayerRequestToken() {
@@ -338,9 +377,9 @@ function clearVideoPlaybackHandlers(video = document.getElementById('player-vide
     video.onended = null;
 }
 
-async function fetchJson(endpoint, errorMessage, {params, init} = {}) {
+async function fetchJson(endpoint, errorMessage, {params, init, timeoutMs = API_FETCH_TIMEOUT_MS} = {}) {
     const query = params ? `?${new URLSearchParams(params).toString()}` : '';
-    const res = await fetchWithTimeout(`${API_BASE}${endpoint}${query}`, init);
+    const res = await fetchWithTimeout(`${API_BASE}${endpoint}${query}`, init, timeoutMs);
     if (!res.ok) throw new Error(errorMessage);
     return await res.json();
 }
@@ -514,6 +553,11 @@ function setSamsungAvplayDisplay() {
     if (!isSamsungAvplayAvailable()) return;
 
     const objectEl = ensureSamsungAvplayObject();
+    const fitMode = currentVideoFitMode || playerPrefs.preferredFitMode || 'contain';
+    const isZoom = fitMode === 'zoom';
+    const zoomFactor = isZoom
+        ? (isSeriesItem(currentSelectedItem) ? 1.18 : 1.12)
+        : 1;
 
     if (objectEl) {
         Object.assign(objectEl.style, {
@@ -527,6 +571,8 @@ function setSamsungAvplayDisplay() {
             height: '100vh',
             minWidth: '100vw',
             minHeight: '100vh',
+            transform: isZoom ? `scale(${zoomFactor})` : 'scale(1)',
+            transformOrigin: 'center center',
             zIndex: '5',
             background: 'transparent',
             pointerEvents: 'none'
@@ -534,25 +580,22 @@ function setSamsungAvplayDisplay() {
     }
 
     try {
-        window.webapis.avplay.setDisplayRect(
-            0,
-            0,
-            window.innerWidth || 1920,
-            window.innerHeight || 1080
-        );
+        window.webapis.avplay.setDisplayRect(0, 0, 1920, 1080);
     } catch (e) {
         console.warn('AVPlay setDisplayRect failed:', e);
     }
 
     try {
-        const method = (currentVideoFitMode || playerPrefs.preferredFitMode || 'contain') === 'zoom'
+        const method = isZoom
             ? 'PLAYER_DISPLAY_MODE_FULL_SCREEN'
-            : 'PLAYER_DISPLAY_MODE_AUTO_ASPECT_RATIO';
+            : 'PLAYER_DISPLAY_MODE_LETTER_BOX';
 
         window.webapis.avplay.setDisplayMethod(method);
     } catch (e) {
         console.warn('AVPlay setDisplayMethod failed:', e);
     }
+
+    updateFitModeButtonLabel();
 }
 function resetSamsungAvplayState() {
     samsungAvplayState.active = false;
@@ -1156,6 +1199,8 @@ let isPreplayEpisodeDropdownOpen = false;
 let isTranslatorDropdownOpen = false;
 let preplayEpisodeConfirmed = false;
 let isPreplayOptionsLoading = false;
+let preplayOptionsLoadPromise = null;
+let preplayOptionsLoadSourceUrl = null;
 let isPlayerOverlayVisible = true;
 let playerOverlayHideTimer = null;
 let autoplayNextEpisodeEnabled = !!playerPrefs.autoplayNextEpisodeEnabled;
@@ -1316,7 +1361,7 @@ async function syncCurrentPlaybackToRemote(options = {}) {
 
         const data = await res.json();
 
-        if (data.ok) {
+        if (data.ok && currentScreen === 'continue') {
             await refreshContinueWatching({focusFirst: currentScreen === 'continue'});
         }
     } catch (e) {
@@ -1482,7 +1527,10 @@ async function performSearch(query) {
 }
 
 async function loadMovieDetails(url) {
-    return await fetchJson('/movie', 'Не удалось получить details', {params: {url}});
+    return await fetchJson('/movie', 'Не удалось получить details', {
+        params: {url},
+        timeoutMs: DETAILS_FETCH_TIMEOUT_MS
+    });
 }
 
 async function loadMovieStream(url) {
@@ -1490,11 +1538,15 @@ async function loadMovieStream(url) {
 }
 
 async function loadMovieTranslators(url) {
-    return await fetchJson('/translators', 'Не удалось получить озвучки', {params: {url}});
+    return await fetchJson('/translators', 'Не удалось получить озвучки', {
+        params: {url},
+        timeoutMs: TRANSLATORS_FETCH_TIMEOUT_MS
+    });
 }
 
 async function loadEpisodesData(url, {refresh = false} = {}) {
     return await fetchJson('/episodes', 'Не удалось получить episodes', {
+        timeoutMs: EPISODES_FETCH_TIMEOUT_MS,
         params: {
             url,
             ...(refresh ? {refresh: '1', _: String(Date.now())} : {})
@@ -2518,6 +2570,46 @@ async function checkAuthStatus() {
     updateLoginStatus();
 }
 
+async function autoLoginIfConfigured() {
+    if (isLoggedIn) return true;
+
+    authStatusText = "Auto login...";
+    updateLoginStatus();
+
+    try {
+        const res = await fetch(`${API_BASE}/auth/auto_login`, {
+            method: "POST"
+        });
+        const data = await res.json();
+
+        if (!res.ok || !data.ok) {
+            if (data.configured === false) {
+                authStatusText = "Not logged in";
+                updateLoginStatus();
+                return false;
+            }
+            throw new Error(data.error || "Auto login failed");
+        }
+
+        isLoggedIn = !!data.logged_in;
+        authStatusText = isLoggedIn ? "Logged in automatically" : "Not logged in";
+        updateLoginStatus();
+        return isLoggedIn;
+    } catch (err) {
+        isLoggedIn = false;
+        authStatusText = `Auto login failed: ${err.message}`;
+        updateLoginStatus();
+        return false;
+    }
+}
+
+async function initializeAuth() {
+    await checkAuthStatus();
+    if (!isLoggedIn) {
+        await autoLoginIfConfigured();
+    }
+}
+
 async function performLogin() {
     const emailInput = document.getElementById("login-email");
     const passwordInput = document.getElementById("login-password");
@@ -2816,6 +2908,11 @@ function moveFocus(dir) {
     }
 
     if (currentScreen === 'player') {
+        if (!isPlayerOverlayVisible && ['left', 'right', 'up', 'down'].includes(dir)) {
+            revealPlayerOverlayForRemote(2600);
+            return;
+        }
+
         showPlayerOverlayAndSchedule(1800);
 
         if (active?.dataset?.type === 'player-seekbar' && dir === 'left') {
@@ -2940,7 +3037,7 @@ function moveFocus(dir) {
             applyFocusedIndex(focusIndex, {ensureVisible: false});
             verticalScrollContainer.scrollBy({
                 top: -scrollStep,
-                behavior: 'smooth'
+                behavior: isTizenRuntime() ? 'smooth' : 'auto'
             });
             return;
         }
@@ -2949,7 +3046,7 @@ function moveFocus(dir) {
             applyFocusedIndex(focusIndex, {ensureVisible: false});
             verticalScrollContainer.scrollBy({
                 top: scrollStep,
-                behavior: 'smooth'
+                behavior: isTizenRuntime() ? 'smooth' : 'auto'
             });
             return;
         }
@@ -3211,7 +3308,9 @@ function scrollPosterRowTo(row, left, behavior) {
         return;
     }
 
-    const duration = currentScreen === 'continue' ? 260 : 200;
+    const duration = isTizenRuntime()
+        ? 140
+        : (currentScreen === 'continue' ? 260 : 200);
     const getTime = () => (window.performance?.now ? window.performance.now() : Date.now());
     const startedAt = getTime();
 
@@ -3237,7 +3336,7 @@ function ensureFocusedElementVisible(element) {
     scheduleFocusedCardPreload(element);
 
     const posterRow = element.closest('.poster-row');
-    const scrollBehavior = currentScreen === 'continue' && !posterRow ? 'auto' : 'smooth';
+    const scrollBehavior = posterRow ? 'smooth' : 'auto';
 
     if (posterRow) {
         const horizontalPadding = 24;
@@ -3255,6 +3354,29 @@ function ensureFocusedElementVisible(element) {
 
         if (targetLeft !== null) {
             scrollPosterRowTo(posterRow, targetLeft, scrollBehavior);
+        }
+
+        const screenRoot =
+            element.closest('.screen.active') ||
+            document.querySelector(`#screen-${currentScreen}`) ||
+            document.querySelector('.screen.active');
+
+        if (screenRoot && screenRoot.scrollHeight > screenRoot.clientHeight) {
+            const elementRect = element.getBoundingClientRect();
+            const containerRect = screenRoot.getBoundingClientRect();
+            const verticalPadding = 28;
+
+            if (elementRect.top < containerRect.top + verticalPadding) {
+                screenRoot.scrollBy({
+                    top: elementRect.top - containerRect.top - verticalPadding,
+                    behavior: isTizenRuntime() ? 'smooth' : 'auto'
+                });
+            } else if (elementRect.bottom > containerRect.bottom - verticalPadding) {
+                screenRoot.scrollBy({
+                    top: elementRect.bottom - containerRect.bottom + verticalPadding,
+                    behavior: isTizenRuntime() ? 'smooth' : 'auto'
+                });
+            }
         }
 
         return;
@@ -3693,34 +3815,46 @@ function renderPreplaySeriesOptions() {
     target.innerHTML = `${seasonsHtml}${episodesHtml}`;
 }
 
-async function ensurePreplayOptionsLoaded({focusFirst = true} = {}) {
+async function loadPreplayOptionsInternal({focusFirst = true} = {}) {
     if (!currentSelectedItem?.sourceUrl) return false;
+    const item = currentSelectedItem;
+    const sourceUrl = item.sourceUrl;
 
     isPreplayOptionsLoading = true;
     updatePreplaySummary({loadingText: 'Loading playback options...'});
     renderPreplaySeriesOptions();
 
     try {
-        if (isSeriesItem(currentSelectedItem)) {
-            currentEpisodesData = await loadEpisodesDataWithRetryCached(currentSelectedItem.sourceUrl);
+        if (isSeriesItem(item)) {
+            currentEpisodesData = await loadEpisodesDataWithRetryCached(sourceUrl);
+            if (currentSelectedItem?.sourceUrl !== sourceUrl) {
+                isPreplayOptionsLoading = false;
+                return false;
+            }
             if (currentEpisodesData?.translators && typeof currentEpisodesData.translators === 'object') {
                 currentTranslators = currentEpisodesData.translators;
             }
         }
 
-        if (!isSeriesItem(currentSelectedItem)) {
+        if (!isSeriesItem(item)) {
             currentSelectedSeason = null;
             currentSelectedEpisode = null;
             preplayEpisodeConfirmed = false;
         }
 
-        if (!isSeriesItem(currentSelectedItem) || preplayEpisodeConfirmed) {
+        if (!isSeriesItem(item) || preplayEpisodeConfirmed) {
             if (!Object.keys(currentTranslators || {}).length) {
-                const translatorsData = await loadMovieTranslatorsCached(currentSelectedItem.sourceUrl);
+                const translatorsData = await loadMovieTranslatorsCached(sourceUrl);
+                if (currentSelectedItem?.sourceUrl !== sourceUrl) {
+                    isPreplayOptionsLoading = false;
+                    return false;
+                }
                 currentTranslators = translatorsData.translators || {};
             }
 
-            applyPreferredTranslatorIfAvailable();
+            if (!currentTranslationId || !applyTranslatorState(currentTranslationId, {clearMissing: true})) {
+                applyPreferredTranslatorIfAvailable();
+            }
             ensureTranslatorAvailableForCurrentEpisode();
         }
 
@@ -3737,6 +3871,46 @@ async function ensurePreplayOptionsLoaded({focusFirst = true} = {}) {
         scheduleRefreshFocusables();
         return false;
     }
+}
+
+async function ensurePreplayOptionsLoaded({focusFirst = true} = {}) {
+    const sourceUrl = currentSelectedItem?.sourceUrl || '';
+    if (preplayOptionsLoadPromise && preplayOptionsLoadSourceUrl === sourceUrl) {
+        return await preplayOptionsLoadPromise;
+    }
+
+    preplayOptionsLoadSourceUrl = sourceUrl;
+    preplayOptionsLoadPromise = loadPreplayOptionsInternal({focusFirst})
+        .finally(() => {
+            if (preplayOptionsLoadSourceUrl === sourceUrl) {
+                preplayOptionsLoadPromise = null;
+                preplayOptionsLoadSourceUrl = null;
+            }
+        });
+
+    return await preplayOptionsLoadPromise;
+}
+
+function warmSeriesPlaybackOptions(item = currentSelectedItem) {
+    if (!item?.sourceUrl || !isSeriesItem(item)) return;
+    const sourceUrl = item.sourceUrl;
+
+    loadEpisodesDataWithRetryCached(sourceUrl)
+        .then(data => {
+            if (currentSelectedItem?.sourceUrl !== sourceUrl) return;
+            currentEpisodesData = data;
+            if (data?.translators && typeof data.translators === 'object') {
+                currentTranslators = data.translators;
+            }
+            if (document.getElementById('preplay-modal')?.style.display === 'flex') {
+                renderPreplaySeriesOptions();
+                renderTranslatorButtons();
+                updatePreplaySummary();
+                scheduleRefreshFocusables();
+            }
+        })
+        .catch(() => {
+        });
 }
 
 // =========================
@@ -4060,7 +4234,7 @@ async function openDetailsForItem(item, options = {}) {
     if (!options.preservePlaybackState && savedEntry) {
             currentSelectedSeason = savedEntry.savedSeason || savedEntry.season || currentSelectedSeason || null;
             currentSelectedEpisode = savedEntry.savedEpisode || savedEntry.episode || currentSelectedEpisode || null;
-            currentTranslationId = getPreferredTranslatorForSource(item.sourceUrl) || savedEntry.savedTranslationId || savedEntry.translationId || currentTranslationId || null;
+            currentTranslationId = savedEntry.savedTranslationId || savedEntry.translationId || getPreferredTranslatorForSource(item.sourceUrl) || currentTranslationId || null;
             currentTranslatorName = savedEntry.savedTranslatorName || savedEntry.translatorName || currentTranslatorName || null;
             currentQuality = savedEntry.savedQuality || savedEntry.quality || currentQuality || null;
             pendingPreplayResumeTime = Number(savedEntry.savedTime || savedEntry.currentTime || 0) || 0;
@@ -4078,7 +4252,7 @@ async function openDetailsForItem(item, options = {}) {
         if (!options.preservePlaybackState) {
             currentSelectedSeason = savedEntry?.savedSeason || savedEntry?.season || null;
             currentSelectedEpisode = savedEntry?.savedEpisode || savedEntry?.episode || null;
-            currentTranslationId = getPreferredTranslatorForSource(item.sourceUrl) || savedEntry?.savedTranslationId || savedEntry?.translationId || null;
+            currentTranslationId = savedEntry?.savedTranslationId || savedEntry?.translationId || getPreferredTranslatorForSource(item.sourceUrl) || null;
             currentTranslatorName = savedEntry?.savedTranslatorName || savedEntry?.translatorName || null;
             currentTranslatorPremium = false;
             resetSubtitleState();
@@ -4090,6 +4264,7 @@ async function openDetailsForItem(item, options = {}) {
 
     renderDetails(item);
     switchScreen('details');
+    warmSeriesPlaybackOptions(item);
 
     try {
         const details = await loadMovieDetailsCached(item.sourceUrl);
@@ -4106,6 +4281,7 @@ async function openDetailsForItem(item, options = {}) {
         if (isSeriesItem(merged) && getNormalizedEpisodesInfo(details).length) {
             currentEpisodesData = details;
         }
+        warmSeriesPlaybackOptions(merged);
 
         const seriesPanel = document.getElementById('series-panel');
         if (seriesPanel) seriesPanel.innerHTML = '';
@@ -4664,6 +4840,7 @@ function restoreAppLayoutAfterPlayer() {
 function applyFullscreenVideoPresentation(video = document.getElementById('player-video')) {
     if (isSamsungAvplayActive()) {
         setSamsungAvplayDisplay();
+        setTimeout(() => setSamsungAvplayDisplay(), 80);
 
         if (video) {
             video.style.display = 'none';
@@ -4686,7 +4863,7 @@ function applyFullscreenVideoPresentation(video = document.getElementById('playe
     const isSeries = isSeriesItem(currentSelectedItem);
 
     const SERIES_ZOOM = 1.2;
-    const MOVIE_ZOOM = 1;
+    const MOVIE_ZOOM = 1.12;
 
     video.style.position = 'absolute';
     video.style.inset = '0';
@@ -5080,6 +5257,7 @@ function showPlayerOverlay() {
 
 function hidePlayerOverlay() {
     setPlayerOverlayVisible(false);
+    focusPlayerToggleButton({visibleOnly: false});
 }
 function clearPlayerOverlayHideTimer() {
     if (playerOverlayHideTimer) {
@@ -5111,6 +5289,13 @@ function schedulePlayerOverlayAutoHide(forceDelay = 2600) {
 function keepPlayerOverlayVisible() {
     showPlayerOverlay();
 }
+
+function revealPlayerOverlayForRemote(delay = 2600) {
+    showPlayerOverlay();
+    focusPlayerToggleButton({visibleOnly: false});
+    schedulePlayerOverlayAutoHide(delay);
+}
+
 function focusPlayerToggleButton({visibleOnly = false} = {}) {
     const toggleBtn = document.querySelector('#screen-player [data-type="player-toggle"]');
     if (!toggleBtn) return;
@@ -5129,6 +5314,11 @@ function focusPlayerToggleButton({visibleOnly = false} = {}) {
 // =========================
 
 async function activateFocused() {
+    if (currentScreen === 'player' && !isPlayerOverlayVisible) {
+        revealPlayerOverlayForRemote(2600);
+        return;
+    }
+
     if (currentScreen === 'player') {
         schedulePlayerOverlayAutoHide(2600);
     }
@@ -5431,7 +5621,7 @@ function handleBack() {
 
 async function init() {
     const contentPromise = reloadContent();
-    const authPromise = checkAuthStatus();
+    const authPromise = initializeAuth();
     const searchInput = document.getElementById("searchInput");
 
     if (searchInput) {
@@ -5482,15 +5672,19 @@ async function init() {
         if ([37, 38, 39, 40, 13, 10009, 8].includes(code)) e.preventDefault();
         switch (code) {
             case 37:
+                if (!canProcessNavigationKey()) return;
                 moveFocus('left');
                 break;
             case 38:
+                if (!canProcessNavigationKey()) return;
                 moveFocus('up');
                 break;
             case 39:
+                if (!canProcessNavigationKey()) return;
                 moveFocus('right');
                 break;
             case 40:
+                if (!canProcessNavigationKey()) return;
                 moveFocus('down');
                 break;
             case 13:
